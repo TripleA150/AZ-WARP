@@ -33,8 +33,7 @@ cat << 'EOF' > "$MASTER_FILE"
 # ==========================================
 # СПИСОК ДОМЕНОВ ДЛЯ МАРШРУТИЗАЦИИ WARP
 # Строки, начинающиеся с '#', игнорируются.
-# ⚠️ НЕ удаляйте маркеры вида # --- GEMINI ---
-#    Они используются для управления списками.
+# ⚠️ НЕ удаляйте служебные маркеры блоков GEMINI/CHATGPT
 # ==========================================
 
 # Пользовательские домены:
@@ -121,6 +120,19 @@ calculate_tun_ip() {
     local base="${subnet%.*}"
     local mask="${subnet##*/}"
     echo "${base}.1/${mask}"
+}
+
+has_list_block() {
+    local list_name="$1"
+    grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
+}
+
+normalize_include_ips() {
+    local file="$1"
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 version_gt() {
@@ -210,9 +222,22 @@ domains_in_sync() {
 
 subnet_conflicts() {
     local subnet="$1"
+    local line iface route_net
 
-    ip -o -4 addr show 2>/dev/null | awk '{print $4}' | grep -qxF "$subnet" && return 0
-    ip route 2>/dev/null | grep -qF "${subnet%/*}" && return 0
+    while IFS= read -r line; do
+        iface=$(echo "$line" | awk '{print $2}')
+        route_net=$(echo "$line" | awk '{print $4}')
+        [ "$route_net" = "$subnet" ] || continue
+        [ "$iface" = "singbox-tun" ] && continue
+        return 0
+    done < <(ip -o -4 addr show 2>/dev/null)
+
+    while IFS= read -r line; do
+        route_net=$(echo "$line" | awk '{print $1}')
+        [ "$route_net" = "$subnet" ] || continue
+        echo "$line" | grep -q "dev singbox-tun" && continue
+        return 0
+    done < <(ip route 2>/dev/null)
 
     if command -v docker >/dev/null 2>&1; then
         local ids
@@ -612,7 +637,7 @@ enable_disable_list() {
     filter_valid_domains_file "$list_file" "$valid_tmp"
 
     if [ "$action" = "enable" ]; then
-        if grep -q "$marker" "$MASTER_FILE"; then
+        if has_list_block "$list_name"; then
             rm -f "$valid_tmp"
             echo -e "${YELLOW}Список ${list_name^^} уже включен.${NC}"
             return 0
@@ -658,8 +683,8 @@ enable_disable_list() {
 
     if [ "$action" = "disable" ]; then
         rm -f "$valid_tmp"
-        if grep -q "$marker" "$MASTER_FILE"; then
-            sed -i "/$marker/,/$end_marker/d" "$MASTER_FILE"
+        if has_list_block "$list_name"; then
+            sed -i "/^$(printf '%s' "$marker" | sed 's/[.[\*^$()+?{|\\]/\\&/g')$/,/^$(printf '%s' "$end_marker" | sed 's/[.[\*^$()+?{|\\]/\\&/g')$/d" "$MASTER_FILE"
             echo -e "${YELLOW}Список ${list_name^^} выключен.${NC}"
             return 0
         fi
@@ -673,7 +698,7 @@ enable_disable_list() {
 
 toggle_list() {
     local list_name=$1
-    if grep -q "# --- ${list_name^^} ---" "$MASTER_FILE"; then
+    if has_list_block "$list_name"; then
         enable_disable_list disable "$list_name"
     else
         enable_disable_list enable "$list_name"
@@ -687,7 +712,7 @@ update_list_blocks() {
         local end_marker="# --- END ${list_name^^} ---"
         local list_file="$DOWNLOAD_DIR/${list_name}.txt"
 
-        if grep -q "$marker" "$MASTER_FILE"; then
+        if has_list_block "$list_name"; then
             if [ ! -f "$list_file" ]; then
                 echo -e "${RED}Файл $list_file не найден, пропускаем ${list_name}${NC}"
                 continue
@@ -697,7 +722,7 @@ update_list_blocks() {
             valid_tmp=$(mktemp /tmp/warper_update_list.XXXXXX)
             filter_valid_domains_file "$list_file" "$valid_tmp"
 
-            sed -i "/$marker/,/$end_marker/d" "$MASTER_FILE"
+            sed -i "/^$(printf '%s' "$marker" | sed 's/[.[\*^$()+?{|\\]/\\&/g')$/,/^$(printf '%s' "$end_marker" | sed 's/[.[\*^$()+?{|\\]/\\&/g')$/d" "$MASTER_FILE"
             echo "$marker" >> "$MASTER_FILE"
             cat "$valid_tmp" >> "$MASTER_FILE"
             echo "$end_marker" >> "$MASTER_FILE"
@@ -754,8 +779,8 @@ settings_menu() {
 
         local AP_STAT GEM_STAT GPT_STAT
         if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else AP_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if grep -q "# --- GEMINI ---" "$MASTER_FILE"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if grep -q "# --- CHATGPT ---" "$MASTER_FILE"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
+        if has_list_block "gemini"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
+        if has_list_block "chatgpt"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
 
         echo -e " ${CYAN}1.${NC} Автопатч DNS при перезагрузке:  [$AP_STAT]"
         echo -e " ${CYAN}2.${NC} Интеграция доменов Gemini:      [$GEM_STAT]"
@@ -825,6 +850,7 @@ settings_menu() {
 
                             sed -i "\|$old_subnet|d" "$AZ_INC" 2>/dev/null
                             grep -qxF "$new_subnet" "$AZ_INC" 2>/dev/null || echo "$new_subnet" >> "$AZ_INC"
+                            normalize_include_ips "$AZ_INC"
 
                             {
                                 echo "SUBNET=$new_subnet"
