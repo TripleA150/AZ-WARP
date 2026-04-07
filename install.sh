@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/main"
+REPO_URL="https://raw.githubusercontent.com/Liafanx/1.0.25pre/main"
 SB_VERSION="1.13.5"
 
 RED='\033[0;31m'
@@ -122,11 +122,37 @@ check_antizapret() {
     echo -e " - ${GREEN}AntiZapret найден.${NC}"
 }
 
+has_list_block() {
+    local list_name="$1"
+    grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
+}
+
+normalize_include_ips() {
+    local file="$1"
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 subnet_conflicts() {
     local subnet="$1"
+    local line iface route_net
 
-    ip -o -4 addr show 2>/dev/null | awk '{print $4}' | grep -qxF "$subnet" && return 0
-    ip route 2>/dev/null | grep -qF "${subnet%/*}" && return 0
+    while IFS= read -r line; do
+        iface=$(echo "$line" | awk '{print $2}')
+        route_net=$(echo "$line" | awk '{print $4}')
+        [ "$route_net" = "$subnet" ] || continue
+        [ "$iface" = "singbox-tun" ] && continue
+        return 0
+    done < <(ip -o -4 addr show 2>/dev/null)
+
+    while IFS= read -r line; do
+        route_net=$(echo "$line" | awk '{print $1}')
+        [ "$route_net" = "$subnet" ] || continue
+        echo "$line" | grep -q "dev singbox-tun" && continue
+        return 0
+    done < <(ip route 2>/dev/null)
 
     if command -v docker >/dev/null 2>&1; then
         local ids
@@ -189,8 +215,7 @@ cat << 'EOF' > "$MASTER_FILE"
 # ==========================================
 # СПИСОК ДОМЕНОВ ДЛЯ МАРШРУТИЗАЦИИ WARP
 # Строки, начинающиеся с '#', игнорируются.
-# ⚠️ НЕ удаляйте маркеры вида # --- GEMINI ---
-#    Они используются для управления списками.
+# ⚠️ НЕ удаляйте служебные маркеры блоков GEMINI/CHATGPT
 # ==========================================
 
 # Пользовательские домены:
@@ -204,7 +229,7 @@ TUN_IP="198.18.0.1/24"
 
 echo -e "\n${YELLOW}⚙️  Настройка маршрутизации доменов${NC}"
 
-if grep -q "# --- GEMINI ---" "$MASTER_FILE"; then
+if has_list_block "gemini"; then
     echo -e "${GREEN}✔ Домены Gemini уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -221,7 +246,7 @@ else
     done
 fi
 
-if grep -q "# --- CHATGPT ---" "$MASTER_FILE"; then
+if has_list_block "chatgpt"; then
     echo -e "${GREEN}✔ Домены ChatGPT уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -383,15 +408,17 @@ echo -e "\n${YELLOW}[5/8] Интеграция с маршрутами AntiZapre
 AZ_INC="/root/antizapret/config/include-ips.txt"
 if [ -f "$AZ_INC" ]; then
     sed -i '\|10.255.0.0/24|d' "$AZ_INC" 2>/dev/null
-    if ! grep -qF "$SUBNET" "$AZ_INC"; then
+    if ! grep -qxF "$SUBNET" "$AZ_INC"; then
         echo -e " - ${CYAN}Добавление подсети $SUBNET в include-ips.txt...${NC}"
         echo "$SUBNET" >> "$AZ_INC"
+        normalize_include_ips "$AZ_INC"
         echo -e " - ${YELLOW}⏳ Запуск doall.sh (обновление конфигурации AntiZapret, от 1 до 5 минут)...${NC}"
         export DEBIAN_FRONTEND=noninteractive
         export SYSTEMD_PAGER=""
         bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
         echo -e " - ${GREEN}Конфигурация маршрутов успешно обновлена!${NC}"
     else
+        normalize_include_ips "$AZ_INC"
         echo -e " - ${GREEN}Подсеть $SUBNET уже присутствует в include-ips.txt.${NC}"
     fi
 fi
@@ -404,7 +431,7 @@ echo -e "\n${YELLOW}[7/8] Настройка списка доменов и ут
 
 if [ "$ADD_GEMINI" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов Gemini в мастер-файл...${NC}"
-    if ! grep -q "# --- GEMINI ---" "$MASTER_FILE"; then
+    if ! has_list_block "gemini"; then
         echo "# --- GEMINI ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/gemini.txt" >> "$MASTER_FILE"
         echo "# --- END GEMINI ---" >> "$MASTER_FILE"
@@ -413,7 +440,7 @@ fi
 
 if [ "$ADD_CHATGPT" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов ChatGPT в мастер-файл...${NC}"
-    if ! grep -q "# --- CHATGPT ---" "$MASTER_FILE"; then
+    if ! has_list_block "chatgpt"; then
         echo "# --- CHATGPT ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/chatgpt.txt" >> "$MASTER_FILE"
         echo "# --- END CHATGPT ---" >> "$MASTER_FILE"
