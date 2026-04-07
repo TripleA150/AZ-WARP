@@ -25,6 +25,14 @@ load_config_value() {
     grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d'=' -f2- | tr -d '"'\''[:space:]'
 }
 
+normalize_include_ips() {
+    local file="$1"
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 while true; do
     read -r -p "Вы уверены, что хотите полностью удалить warper? (N/y): " conf < /dev/tty
     if [[ -z "$conf" || "$conf" =~ ^[Nn]$ ]]; then
@@ -104,6 +112,7 @@ AZ_INC="/root/antizapret/config/include-ips.txt"
 if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
     echo -e " - ${CYAN}Удаление подсети $SUBNET из $AZ_INC...${NC}"
     sed -i "\|$SUBNET|d" "$AZ_INC"
+    normalize_include_ips "$AZ_INC"
 
     echo -e " - ${CYAN}Запуск doall.sh (обновление конфигурации AntiZapret, подождите)...${NC}"
     export DEBIAN_FRONTEND=noninteractive
@@ -112,6 +121,7 @@ if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
 
     echo -e " - ${GREEN}Конфигурация маршрутов успешно восстановлена!${NC}"
 else
+    normalize_include_ips "$AZ_INC"
     echo -e " - ${GREEN}Подсеть $SUBNET отсутствует, изменения маршрутов не требуются.${NC}"
 fi
 

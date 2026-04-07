@@ -33,8 +33,7 @@ cat << 'EOF' > "$MASTER_FILE"
 # ==========================================
 # СПИСОК ДОМЕНОВ ДЛЯ МАРШРУТИЗАЦИИ WARP
 # Строки, начинающиеся с '#', игнорируются.
-# ⚠️ НЕ удаляйте маркеры вида # --- GEMINI ---
-#    Они используются для управления списками.
+# ⚠️ НЕ удаляйте служебные маркеры блоков GEMINI/CHATGPT
 # ==========================================
 
 # Пользовательские домены:
@@ -123,6 +122,127 @@ calculate_tun_ip() {
     echo "${base}.1/${mask}"
 }
 
+has_list_block() {
+    local list_name="$1"
+    grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
+}
+
+normalize_include_ips() {
+    local file="$1"
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+extract_user_domains() {
+    local input="$1"
+    awk '
+    BEGIN { in_block=0 }
+    /^# --- [A-Z0-9_]+ ---$/ { in_block=1; next }
+    /^# --- END [A-Z0-9_]+ ---$/ { in_block=0; next }
+    {
+        if (in_block) next
+        if ($0 ~ /^\s*$/) next
+        if ($0 ~ /^\s*#/) next
+        print
+    }
+    ' "$input" | while IFS= read -r line; do
+        validate_domain "$line" 2>/dev/null || true
+    done | sort -u
+}
+
+extract_block() {
+    local input="$1"
+    local list_name="$2"
+    local marker="# --- ${list_name^^} ---"
+    local end_marker="# --- END ${list_name^^} ---"
+
+    awk -v start="$marker" -v end="$end_marker" '
+    $0 == start { in_block=1 }
+    in_block { print }
+    $0 == end { in_block=0 }
+    ' "$input"
+}
+
+rebuild_master_file() {
+    local source_file="${1:-$MASTER_FILE}"
+    local output_file="${2:-$MASTER_FILE}"
+    local tmp user_tmp gemini_tmp chatgpt_tmp
+    tmp=$(mktemp)
+    user_tmp=$(mktemp)
+    gemini_tmp=$(mktemp)
+    chatgpt_tmp=$(mktemp)
+
+    extract_user_domains "$source_file" > "$user_tmp"
+    extract_block "$source_file" "gemini" > "$gemini_tmp"
+    extract_block "$source_file" "chatgpt" > "$chatgpt_tmp"
+
+    {
+        cat << 'EOF'
+# ==========================================
+# СПИСОК ДОМЕНОВ ДЛЯ МАРШРУТИЗАЦИИ WARP
+# Строки, начинающиеся с '#', игнорируются.
+# ⚠️ НЕ удаляйте служебные маркеры блоков GEMINI/CHATGPT
+# ==========================================
+
+# Пользовательские домены:
+EOF
+
+        if [ -s "$user_tmp" ]; then
+            cat "$user_tmp"
+        fi
+
+        if [ -s "$gemini_tmp" ]; then
+            echo ""
+            cat "$gemini_tmp"
+        fi
+
+        if [ -s "$chatgpt_tmp" ]; then
+            echo ""
+            cat "$chatgpt_tmp"
+        fi
+    } > "$tmp"
+
+    mv "$tmp" "$output_file"
+    rm -f "$user_tmp" "$gemini_tmp" "$chatgpt_tmp"
+}
+
+canonical_master_hash() {
+    local tmp
+    tmp=$(mktemp)
+    rebuild_master_file "$MASTER_FILE" "$tmp"
+    sha256sum "$tmp" | awk '{print $1}'
+    rm -f "$tmp"
+}
+
+insert_user_domain() {
+    local domain="$1"
+    local tmp
+    tmp=$(mktemp)
+    rebuild_master_file "$MASTER_FILE" "$tmp"
+
+    if extract_user_domains "$tmp" | grep -qxF "$domain"; then
+        mv "$tmp" "$MASTER_FILE"
+        return 0
+    fi
+
+    awk -v domain="$domain" '
+    BEGIN { inserted=0 }
+    {
+        print
+        if ($0 == "# Пользовательские домены:" && inserted == 0) {
+            print domain
+            inserted=1
+        }
+    }
+    ' "$tmp" > "${tmp}.new"
+
+    mv "${tmp}.new" "$tmp"
+    rebuild_master_file "$tmp" "$MASTER_FILE"
+    rm -f "$tmp"
+}
+
 version_gt() {
     [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1" ]
 }
@@ -156,10 +276,6 @@ download_file_safe() {
 
     mv "$tmp" "$dest"
     return 0
-}
-
-get_clean_domains() {
-    grep -vE '^\s*#|^\s*$' "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort -u
 }
 
 filter_valid_domains_file() {
@@ -210,9 +326,22 @@ domains_in_sync() {
 
 subnet_conflicts() {
     local subnet="$1"
+    local line iface route_net
 
-    ip -o -4 addr show 2>/dev/null | awk '{print $4}' | grep -qxF "$subnet" && return 0
-    ip route 2>/dev/null | grep -qF "${subnet%/*}" && return 0
+    while IFS= read -r line; do
+        iface=$(echo "$line" | awk '{print $2}')
+        route_net=$(echo "$line" | awk '{print $4}')
+        [ "$route_net" = "$subnet" ] || continue
+        [ "$iface" = "singbox-tun" ] && continue
+        return 0
+    done < <(ip -o -4 addr show 2>/dev/null)
+
+    while IFS= read -r line; do
+        route_net=$(echo "$line" | awk '{print $1}')
+        [ "$route_net" = "$subnet" ] || continue
+        echo "$line" | grep -q "dev singbox-tun" && continue
+        return 0
+    done < <(ip route 2>/dev/null)
 
     if command -v docker >/dev/null 2>&1; then
         local ids
@@ -405,23 +534,26 @@ patch_kresd() {
         return 1
     fi
 
-    if grep -q "WARP-MOD-START" "$KRESD_CONF"; then
-        systemctl restart kresd@1 kresd@2 || return 1
-        return 0
-    fi
-
     backup_kresd || {
         echo -e "${RED}Не удалось создать backup $KRESD_CONF.${NC}"
         return 1
     }
 
-    local tmpfile
+    local clean_tmp tmpfile
+    clean_tmp=$(mktemp /tmp/kresd.clean.XXXXXX)
     tmpfile=$(mktemp /tmp/kresd.conf.XXXXXX)
 
+    sed '/-- \[WARP-MOD-START\]/,/-- \[WARP-MOD-END\]/d' "$KRESD_CONF" > "$clean_tmp"
+
     awk '
-    BEGIN { found=0 }
-    /-- Resolve non-blocked domains/ || /-- Resolve blocked domains/ {
-        found=1
+    BEGIN {
+        in_inst1=0
+        in_inst2=0
+        inserted1=0
+        inserted2=0
+    }
+
+    function print_warp_block() {
         print "\t-- [WARP-MOD-START]"
         print "\tlocal warp_domains = {}"
         print "\tlocal wfile = io.open(\"/etc/knot-resolver/warper-domains.txt\", \"r\")"
@@ -437,15 +569,58 @@ patch_kresd() {
         print "\tend"
         print "\t-- [WARP-MOD-END]"
     }
-    { print }
-    END { if (found == 0) exit 42 }
-    ' "$KRESD_CONF" > "$tmpfile"
+
+    /^if string.match\(systemd_instance, '\''\^1'\''\) then$/ {
+        in_inst1=1
+        in_inst2=0
+        print
+        next
+    }
+
+    /^elseif string.match\(systemd_instance, '\''\^2'\''\) then$/ {
+        in_inst1=0
+        in_inst2=1
+        print
+        next
+    }
+
+    /^else panic/ {
+        in_inst1=0
+        in_inst2=0
+        print
+        next
+    }
+
+    in_inst1 && /^[[:space:]]*-- Resolve non-blocked domains$/ && inserted1==0 {
+        print_warp_block()
+        inserted1=1
+        print
+        next
+    }
+
+    in_inst2 && /^[[:space:]]*-- Resolve blocked domains$/ && inserted2==0 {
+        print_warp_block()
+        inserted2=1
+        print
+        next
+    }
+
+    {
+        print
+    }
+
+    END {
+        if (inserted1 == 0 || inserted2 == 0) exit 42
+    }
+    ' "$clean_tmp" > "$tmpfile"
     local awk_rc=$?
+
+    rm -f "$clean_tmp"
 
     if [ "$awk_rc" -ne 0 ]; then
         rm -f "$tmpfile"
         if [ "$awk_rc" -eq 42 ]; then
-            echo -e "${RED}Не удалось найти точки вставки в $KRESD_CONF.${NC}"
+            echo -e "${RED}Не удалось найти корректные точки вставки в $KRESD_CONF.${NC}"
         else
             echo -e "${RED}Ошибка при патчинге $KRESD_CONF.${NC}"
         fi
@@ -512,6 +687,7 @@ doctor() {
     check_item "Службы kresd активны" "systemctl is-active --quiet kresd@1 && systemctl is-active --quiet kresd@2"
     check_item "Автопатч warper включен" "systemctl is-enabled --quiet warper-autopatch"
     check_item "kresd.conf пропатчен" "grep -q 'WARP-MOD-START' '$KRESD_CONF'"
+    check_item "В kresd.conf ровно 2 WARP-блока" "[ \"\$(grep -c 'WARP-MOD-START' '$KRESD_CONF' 2>/dev/null)\" -eq 2 ]"
     check_item "Резервная копия kresd.conf существует" "[ -f '$KRESD_BACKUP' ]"
     check_item "Домены синхронизированы" "domains_in_sync"
     check_item "Подсеть $SUBNET есть в include-ips.txt" "grep -qF '$SUBNET' '$AZ_INC'"
@@ -607,73 +783,60 @@ enable_disable_list() {
         return 1
     fi
 
-    local valid_tmp
+    local valid_tmp tmp
     valid_tmp=$(mktemp /tmp/warper_valid_list.XXXXXX)
+    tmp=$(mktemp /tmp/warper_master.XXXXXX)
     filter_valid_domains_file "$list_file" "$valid_tmp"
 
+    rebuild_master_file "$MASTER_FILE" "$tmp"
+
     if [ "$action" = "enable" ]; then
-        if grep -q "$marker" "$MASTER_FILE"; then
-            rm -f "$valid_tmp"
+        if extract_block "$tmp" "$list_name" | grep -qxF "$marker"; then
+            rm -f "$valid_tmp" "$tmp"
             echo -e "${YELLOW}Список ${list_name^^} уже включен.${NC}"
             return 0
         fi
 
-        if [ -s "$valid_tmp" ]; then
-            local master_tmp
-            master_tmp=$(mktemp /tmp/warper_master.XXXXXX)
-            local in_block=false
-            while IFS= read -r line; do
-                if [[ "$line" =~ ^#\ ---\ .+\ ---$ ]] && [[ ! "$line" =~ END ]]; then
-                    in_block=true
-                    echo "$line" >> "$master_tmp"
-                    continue
-                fi
-                if [[ "$line" =~ ^#\ ---\ END\ .+\ ---$ ]]; then
-                    in_block=false
-                    echo "$line" >> "$master_tmp"
-                    continue
-                fi
-                if [ "$in_block" = true ]; then
-                    echo "$line" >> "$master_tmp"
-                    continue
-                fi
-                local clean_line normalized_line
-                clean_line=$(echo "$line" | xargs)
-                normalized_line=$(validate_domain "$clean_line" 2>/dev/null || true)
-                if [ -n "$normalized_line" ] && grep -qxF "$normalized_line" "$valid_tmp"; then
-                    continue
-                fi
-                echo "$line" >> "$master_tmp"
-            done < "$MASTER_FILE"
-            mv "$master_tmp" "$MASTER_FILE"
-        fi
+        cp "$tmp" "${tmp}.new"
+        {
+            echo ""
+            echo "$marker"
+            cat "$valid_tmp"
+            echo "$end_marker"
+        } >> "${tmp}.new"
 
-        echo "$marker" >> "$MASTER_FILE"
-        cat "$valid_tmp" >> "$MASTER_FILE"
-        echo "$end_marker" >> "$MASTER_FILE"
-        rm -f "$valid_tmp"
+        rebuild_master_file "${tmp}.new" "$MASTER_FILE"
+        rm -f "$valid_tmp" "$tmp" "${tmp}.new"
         echo -e "${GREEN}Список ${list_name^^} включен.${NC}"
         return 0
     fi
 
     if [ "$action" = "disable" ]; then
-        rm -f "$valid_tmp"
-        if grep -q "$marker" "$MASTER_FILE"; then
-            sed -i "/$marker/,/$end_marker/d" "$MASTER_FILE"
+        if extract_block "$tmp" "$list_name" | grep -qxF "$marker"; then
+            awk -v start="$marker" -v end="$end_marker" '
+            $0 == start { skip=1; next }
+            $0 == end { skip=0; next }
+            !skip { print }
+            ' "$tmp" > "${tmp}.new"
+
+            rebuild_master_file "${tmp}.new" "$MASTER_FILE"
+            rm -f "$valid_tmp" "$tmp" "${tmp}.new"
             echo -e "${YELLOW}Список ${list_name^^} выключен.${NC}"
             return 0
         fi
+
+        rm -f "$valid_tmp" "$tmp"
         echo -e "${YELLOW}Список ${list_name^^} уже выключен.${NC}"
         return 0
     fi
 
-    rm -f "$valid_tmp"
+    rm -f "$valid_tmp" "$tmp"
     return 1
 }
 
 toggle_list() {
     local list_name=$1
-    if grep -q "# --- ${list_name^^} ---" "$MASTER_FILE"; then
+    if has_list_block "$list_name"; then
         enable_disable_list disable "$list_name"
     else
         enable_disable_list enable "$list_name"
@@ -683,26 +846,9 @@ toggle_list() {
 
 update_list_blocks() {
     for list_name in "gemini" "chatgpt"; do
-        local marker="# --- ${list_name^^} ---"
-        local end_marker="# --- END ${list_name^^} ---"
-        local list_file="$DOWNLOAD_DIR/${list_name}.txt"
-
-        if grep -q "$marker" "$MASTER_FILE"; then
-            if [ ! -f "$list_file" ]; then
-                echo -e "${RED}Файл $list_file не найден, пропускаем ${list_name}${NC}"
-                continue
-            fi
-
-            local valid_tmp
-            valid_tmp=$(mktemp /tmp/warper_update_list.XXXXXX)
-            filter_valid_domains_file "$list_file" "$valid_tmp"
-
-            sed -i "/$marker/,/$end_marker/d" "$MASTER_FILE"
-            echo "$marker" >> "$MASTER_FILE"
-            cat "$valid_tmp" >> "$MASTER_FILE"
-            echo "$end_marker" >> "$MASTER_FILE"
-
-            rm -f "$valid_tmp"
+        if has_list_block "$list_name"; then
+            enable_disable_list disable "$list_name" >/dev/null 2>&1 || true
+            enable_disable_list enable "$list_name" >/dev/null 2>&1 || true
         fi
     done
 }
@@ -738,6 +884,7 @@ update_warper() {
         fi
     fi
 
+    rebuild_master_file
     update_list_blocks
 
     echo -e "${GREEN}Утилита и списки успешно обновлены!${NC}"
@@ -754,8 +901,8 @@ settings_menu() {
 
         local AP_STAT GEM_STAT GPT_STAT
         if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else AP_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if grep -q "# --- GEMINI ---" "$MASTER_FILE"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if grep -q "# --- CHATGPT ---" "$MASTER_FILE"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
+        if has_list_block "gemini"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
+        if has_list_block "chatgpt"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
 
         echo -e " ${CYAN}1.${NC} Автопатч DNS при перезагрузке:  [$AP_STAT]"
         echo -e " ${CYAN}2.${NC} Интеграция доменов Gemini:      [$GEM_STAT]"
@@ -825,6 +972,7 @@ settings_menu() {
 
                             sed -i "\|$old_subnet|d" "$AZ_INC" 2>/dev/null
                             grep -qxF "$new_subnet" "$AZ_INC" 2>/dev/null || echo "$new_subnet" >> "$AZ_INC"
+                            normalize_include_ips "$AZ_INC"
 
                             {
                                 echo "SUBNET=$new_subnet"
@@ -1001,7 +1149,7 @@ cli_add_domain() {
         return 0
     fi
 
-    echo "$domain" >> "$MASTER_FILE"
+    insert_user_domain "$domain"
     patch_kresd >/dev/null 2>&1 || true
     echo -e "${GREEN}Домен добавлен и применён: $domain${NC}"
     return 0
@@ -1019,6 +1167,7 @@ cli_remove_domain() {
         local escaped
         escaped=$(escape_regex "$domain")
         sed -i "/^${escaped}$/d" "$MASTER_FILE"
+        rebuild_master_file
         patch_kresd >/dev/null 2>&1 || true
         echo -e "${GREEN}Домен удалён и изменения применены: $domain${NC}"
         return 0
@@ -1057,6 +1206,7 @@ cli_disable_list() {
 }
 
 load_config
+rebuild_master_file
 
 case "${1:-}" in
     patch)
@@ -1119,7 +1269,7 @@ while true; do
                 echo -e "${YELLOW}Домен уже есть в списке!${NC}"
                 sleep 1
             else
-                echo "$new_domain" >> "$MASTER_FILE"
+                insert_user_domain "$new_domain"
                 echo -e "${GREEN}Домен '$new_domain' добавлен!${NC}"
                 prompt_apply
             fi
@@ -1135,6 +1285,7 @@ while true; do
             if grep -qxF "$del_domain" "$MASTER_FILE"; then
                 escaped=$(escape_regex "$del_domain")
                 sed -i "/^${escaped}$/d" "$MASTER_FILE"
+                rebuild_master_file
                 echo -e "${GREEN}Домен '$del_domain' удалён!${NC}"
                 prompt_apply
             else
@@ -1143,17 +1294,29 @@ while true; do
             fi
             ;;
         3)
+            rebuild_master_file
             echo -e "\n${CYAN}--- Домены в WARP ---${NC}"
             if [ -s "$MASTER_FILE" ]; then cat "$MASTER_FILE"; else echo -e "${YELLOW}Список пуст.${NC}"; fi
             echo -e "${CYAN}---------------------${NC}"
             read -r -p "Нажмите Enter..."
             ;;
         4)
+            before_hash=$(canonical_master_hash)
             nano "$MASTER_FILE"
-            prompt_apply
+            after_hash=$(canonical_master_hash)
+
+            if [ "$before_hash" != "$after_hash" ]; then
+                rebuild_master_file
+                prompt_apply
+            else
+                rebuild_master_file
+                echo -e "${YELLOW}Изменений не обнаружено.${NC}"
+                sleep 1
+            fi
             ;;
         5)
             echo -e "\n${YELLOW}Запуск синхронизации...${NC}"
+            rebuild_master_file
             if patch_kresd; then
                 echo -e "${GREEN}Готово!${NC}"
             else
