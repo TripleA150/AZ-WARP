@@ -1039,58 +1039,109 @@ show_main_menu() {
     clear
     local REMOTE_VER
     REMOTE_VER=$(get_remote_version)
-    echo -e "${CYAN}==========================================${NC}"
-    echo -e "       🚀 ${YELLOW}Панель управления Warper${NC} 🚀"
-    echo -e "${CYAN}==========================================${NC}"
+    echo -e "${CYAN}================================================${NC}"
+    echo -e "       🚀 ${YELLOW}Панель управления WARPER${NC} 🚀"
+    echo -e "${CYAN}================================================${NC}"
+    
     local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU AZ_WARP_STAT
     UPDATE_AVAILABLE=false
     LOG_LEVEL=$(get_log_level)
     MTU=$(get_mtu)
+    
     if version_gt "$REMOTE_VER" "$LOCAL_VER"; then
-        VER_STR="${YELLOW}$LOCAL_VER (Доступно: $REMOTE_VER)${NC}"
+        VER_STR="${YELLOW}$LOCAL_VER${NC} (📦 Доступно обновление: ${GREEN}$REMOTE_VER${NC})"
         UPDATE_AVAILABLE=true
     else
-        VER_STR="${GREEN}$LOCAL_VER (Актуальная)${NC}"
+        VER_STR="${GREEN}$LOCAL_VER${NC} (✅ актуальная)"
     fi
-    if check_antizapret_warp; then AZ_WARP_STAT="${RED}ANTIZAPRET_WARP=y (КОНФЛИКТ!)${NC}"; else AZ_WARP_STAT="${GREEN}OK${NC}"; fi
-    if systemctl is-active --quiet sing-box; then SB_RUN="${GREEN}запущен${NC}"; else SB_RUN="${RED}выключен${NC}"; fi
-    if systemctl is-enabled --quiet sing-box 2>/dev/null; then SB_EN="${GREEN}автозагрузка вкл${NC}"; else SB_EN="${RED}автозагрузка выкл${NC}"; fi
-    if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then KR_STAT="${GREEN}пропатчен${NC}"; else KR_STAT="${RED}не пропатчен${NC}"; fi
-    if domains_in_sync; then DOM_STAT="${GREEN}синхр.${NC}"; else DOM_STAT="${RED}не синхр.${NC}"; fi
-    if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then AZ_STAT="${GREEN}добавлена${NC}"; else AZ_STAT="${RED}не добавлена${NC}"; fi
-    if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}вкл${NC}"; else AP_STAT="${RED}выкл${NC}"; fi
-    echo -e " - Версия: $VER_STR"
-    echo -e " - AntiZapret: $AZ_WARP_STAT"
-    echo -e " - Sing-box ($SB_RUN, $SB_EN)"
-    echo -e " - Sing-box log: ${CYAN}$LOG_LEVEL${NC}, MTU: ${CYAN}$MTU${NC}"
-    echo -e " - Kresd.conf ($KR_STAT)"
-    echo -e " - Домены ($DOM_STAT)"
-    echo -e " - Fake подсеть $SUBNET ($AZ_STAT)"
-    echo -e " - Автопатч DNS ($AP_STAT)"
-    echo -e "${CYAN}------------------------------------------${NC}"
-    echo -e " ${GREEN}1.${NC} Добавить домен в WARP"
-    echo -e " ${RED}2.${NC} Удалить домен из WARP"
-    echo -e " ${YELLOW}3.${NC} Посмотреть список доменов"
-    echo -e " ${CYAN}4.${NC} Редактировать список (nano)"
-    echo -e " ${CYAN}5.${NC} 🔧 Пропатчить DNS / Синхронизация"
-    echo -e " ${CYAN}6.${NC} ⚙️ Управление sing-box"
-    echo -e " ${CYAN}7.${NC} 📄 Показать логи"
+    
+    if check_antizapret_warp; then
+        AZ_WARP_STAT="${RED}⚠️  ANTIZAPRET_WARP=y (КОНФЛИКТ с ANTIZAPRET_WARP=y !)${NC}"
+    else
+        AZ_WARP_STAT="${GREEN}✅ OK, конфликта Warp не обнаружено ${NC}"
+    fi
+    
+    if systemctl is-active --quiet sing-box; then
+        SB_RUN="${GREEN}🟢 запущен${NC}"
+    else
+        SB_RUN="${RED}🔴 остановлен${NC}"
+    fi
+    
+    if systemctl is-enabled --quiet sing-box 2>/dev/null; then
+        SB_EN="${GREEN}включена${NC}"
+    else
+        SB_EN="${RED}выключена${NC}"
+    fi
+    
+    if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
+        KR_STAT="${GREEN}✅ пропатчен${NC}"
+    else
+        KR_STAT="${RED}❌ не пропатчен${NC}"
+    fi
+    
+    if domains_in_sync; then
+        DOM_STAT="${GREEN}✅ синхронизированы${NC}"
+    else
+        DOM_STAT="${YELLOW}⚠️  требуется синхронизация${NC}"
+    fi
+    
+    if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
+        AZ_STAT="${GREEN}✅ добавлена${NC}"
+    else
+        AZ_STAT="${RED}❌ отсутствует${NC}"
+    fi
+    
+    if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then
+        AP_STAT="${GREEN}✅ включён${NC}"
+    else
+        AP_STAT="${RED}❌ выключен${NC}"
+    fi
+    
+    echo -e ""
+    echo -e " 📌 ${CYAN}Версия:${NC}        $VER_STR"
+    echo -e " 🔗 ${CYAN}AntiZapret:${NC}    $AZ_WARP_STAT"
+    echo -e ""
+    echo -e " 📡 ${CYAN}Sing-box:${NC}      $SB_RUN | Автозагрузка: $SB_EN"
+    echo -e " ⚙️  ${CYAN}Параметры:${NC}    Log: ${CYAN}$LOG_LEVEL${NC} | MTU: ${CYAN}$MTU${NC}"
+    echo -e ""
+    echo -e " 🌐 ${CYAN}DNS (kresd):${NC}   $KR_STAT"
+    echo -e " 📁 ${CYAN}Домены:${NC}        $DOM_STAT"
+    echo -e "    ${CYAN}Файл:${NC}          ${YELLOW}$MASTER_FILE${NC}"
+    echo -e ""
+    echo -e " 🔀 ${CYAN}Fake-подсеть:${NC}  ${YELLOW}$SUBNET${NC} — $AZ_STAT"
+    echo -e " 🔄 ${CYAN}Автопатч DNS:${NC}  $AP_STAT"
+    echo -e ""
+    echo -e "${CYAN}------------------------------------------------${NC}"
+    echo -e " ${GREEN}1.${NC} ➕ Добавить домен в WARP"
+    echo -e " ${RED}2.${NC} ➖ Удалить домен из WARP"
+    echo -e " ${YELLOW}3.${NC} 📋 Посмотреть список доменов"
+    echo -e " ${CYAN}4.${NC} ✏️  Редактировать список (nano)"
+    echo -e " ${CYAN}5.${NC} 🔧 Применить изменения / Синхронизация"
+    echo -e " ${CYAN}6.${NC} ⚙️  Управление sing-box"
+    echo -e " ${CYAN}7.${NC} 📄 Показать логи sing-box"
     echo -e " ${CYAN}D.${NC} 🩺 Диагностика (doctor)"
     echo -e " ${CYAN}S.${NC} 📊 Краткий статус"
+    echo -e "${CYAN}------------------------------------------------${NC}"
+    
     if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
-        echo -e " ${RED}8. ⏹ Отключить WARPER${NC}"
+        echo -e " ${RED}8.${NC} ⏹️  Отключить WARPER"
     else
-        echo -e " ${GREEN}8. ▶ Включить WARPER${NC}"
+        echo -e " ${GREEN}8.${NC} ▶️  Включить WARPER"
     fi
-    echo -e " ${CYAN}9.${NC} 🛠 Настройки"
+    
+    echo -e " ${CYAN}9.${NC} 🛠️  Настройки (Автопатч, Подсеть, Списки, Log, MTU)"
+    
     if [ "$UPDATE_AVAILABLE" = true ]; then
-        echo -e " ${YELLOW}10. ⚡ Обновить WARPER до $REMOTE_VER${NC}"
+        echo -e " ${YELLOW}10.${NC} ⚡ Обновить WARPER до ${GREEN}$REMOTE_VER${NC}"
     else
-        echo -e " ${CYAN}10.${NC} 🔄 Проверить обновления списков"
+        echo -e " ${CYAN}10.${NC} 🔄 Проверить обновления списков доменов"
     fi
-    echo -e " ${RED}U. Удалить warper полностью${NC}"
-    echo -e " ${CYAN}0.${NC} Выход"
-    echo -e "${CYAN}==========================================${NC}"
+    
+    echo -e "${CYAN}------------------------------------------------${NC}"
+    echo -e " ${RED}U.${NC} 🗑️  Удалить WARPER полностью"
+    echo -e " ${CYAN}0.${NC} 🚪 Выход"
+    echo -e "${CYAN}================================================${NC}"
+    
     MENU_UPDATE_AVAILABLE=$UPDATE_AVAILABLE
     MENU_REMOTE_VER=$REMOTE_VER
 }
