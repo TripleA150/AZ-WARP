@@ -12,7 +12,7 @@ KRESD_BACKUP="/etc/knot-resolver/kresd.conf.warper.bak"
 AZ_INC="/root/antizapret/config/include-ips.txt"
 SINGBOX_CONF="/etc/sing-box/config.json"
 SINGBOX_TEMPLATE="$WARPER_DIR/config.json.template"
-REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/main"
+REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/1.1.0pre"
 LOCAL_VER=$(cat "$WARPER_DIR/version" 2>/dev/null | tr -d '\r\n' || echo "0.0.0")
 CONF_FILE="$WARPER_DIR/warper.conf"
 
