@@ -59,6 +59,32 @@ load_config() {
     fi
 }
 
+check_antizapret_warp() {
+    local setup_file="/root/antizapret/setup"
+    if [ -f "$setup_file" ]; then
+        local az_warp
+        az_warp=$(grep -E '^ANTIZAPRET_WARP=' "$setup_file" 2>/dev/null | cut -d'=' -f2 | tr -d '"'\''[:space:]')
+        if [ "$az_warp" = "y" ]; then
+            return 0  # ANTIZAPRET_WARP включён
+        fi
+    fi
+    return 1  # ANTIZAPRET_WARP выключен или не найден
+}
+
+show_antizapret_warp_warning() {
+    echo -e "${RED}================================================${NC}"
+    echo -e "${RED}⚠️  ANTIZAPRET_WARP=y включён!${NC}"
+    echo -e "${RED}================================================${NC}"
+    echo -e "${YELLOW}WARPER не может работать при включённом ANTIZAPRET_WARP,${NC}"
+    echo -e "${YELLOW}так как встроенный WARP AntiZapret конфликтует с WARPER.${NC}"
+    echo -e ""
+    echo -e "${CYAN}Для использования WARPER:${NC}"
+    echo -e "1. Установите ANTIZAPRET_WARP=n в /root/antizapret/setup"
+    echo -e "2. Выполните: /root/antizapret/doall.sh"
+    echo -e "3. Запустите: warper"
+    echo -e "${RED}================================================${NC}"
+}
+
 escape_regex() {
     printf '%s' "$1" | sed 's/[.[\*^$()+?{|\\]/\\&/g'
 }
@@ -651,7 +677,7 @@ file_mode_is_600() {
 status_cmd() {
     load_config
 
-    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu
+    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu az_warp_stat
     if systemctl is-active --quiet sing-box; then sb_run="running"; else sb_run="stopped"; fi
     if systemctl is-enabled --quiet sing-box 2>/dev/null; then sb_en="enabled"; else sb_en="disabled"; fi
     if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then kr_stat="patched"; else kr_stat="not patched"; fi
@@ -659,10 +685,12 @@ status_cmd() {
     if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then az_stat="present"; else az_stat="missing"; fi
     if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then ap_stat="enabled"; else ap_stat="disabled"; fi
     if subnet_conflicts "$SUBNET"; then subnet_conflict="yes"; else subnet_conflict="no"; fi
+    if check_antizapret_warp; then az_warp_stat="ENABLED (conflict!)"; else az_warp_stat="disabled"; fi
     log_level=$(get_log_level)
     mtu=$(get_mtu)
 
     echo "Version: $LOCAL_VER"
+    echo "ANTIZAPRET_WARP: $az_warp_stat"
     echo "sing-box: $sb_run"
     echo "sing-box autostart: $sb_en"
     echo "sing-box log level: $log_level"
@@ -675,6 +703,14 @@ status_cmd() {
 }
 
 prompt_apply() {
+    # Проверка ANTIZAPRET_WARP
+    if check_antizapret_warp; then
+        echo -e "\n${RED}⚠️  ANTIZAPRET_WARP=y — изменения НЕ будут применены к DNS.${NC}"
+        echo -e "${YELLOW}Домены сохранены в файл, но патч kresd не применён.${NC}"
+        read -r -p "Нажмите Enter для продолжения..."
+        return
+    fi
+
     echo -e "\n${YELLOW}Применить изменения и перезапустить DNS?${NC}"
     read -r -e -p "Выбор [Y/n] (по умолчанию Y): " apply_choice
     if [[ -z "$apply_choice" || "$apply_choice" == "Y" || "$apply_choice" == "y" ]]; then
@@ -705,6 +741,12 @@ show_logs() {
 }
 
 patch_kresd() {
+    # Проверка ANTIZAPRET_WARP
+    if check_antizapret_warp; then
+        echo -e "${RED}ANTIZAPRET_WARP=y — патч kresd.conf не может быть применён.${NC}"
+        return 1
+    fi
+
     sync_domains
 
     if [ ! -f "$KRESD_CONF" ]; then
@@ -721,14 +763,14 @@ patch_kresd() {
     clean_tmp=$(mktemp /tmp/kresd.clean.XXXXXX)
     tmpfile=$(mktemp /tmp/kresd.conf.XXXXXX)
 
+    # Удаляем старые WARP-блоки
     sed '/-- \[WARP-MOD-START\]/,/-- \[WARP-MOD-END\]/d' "$KRESD_CONF" > "$clean_tmp"
 
+    # Вставляем блок ТОЛЬКО в kresd@1 (перед "-- Resolve blocked domains using Proxy Resolver")
     awk '
     BEGIN {
         in_inst1=0
-        in_inst2=0
         inserted1=0
-        inserted2=0
     }
 
     function print_warp_block() {
@@ -746,39 +788,25 @@ patch_kresd() {
         print "\t\tend"
         print "\tend"
         print "\t-- [WARP-MOD-END]"
+        print ""
     }
 
     /^if string.match\(systemd_instance, '\''\^1'\''\) then$/ {
         in_inst1=1
-        in_inst2=0
         print
         next
     }
 
     /^elseif string.match\(systemd_instance, '\''\^2'\''\) then$/ {
         in_inst1=0
-        in_inst2=1
         print
         next
     }
 
-    /^else panic/ {
-        in_inst1=0
-        in_inst2=0
-        print
-        next
-    }
-
-    in_inst1 && /^[[:space:]]*-- Resolve non-blocked domains$/ && inserted1==0 {
+    # Вставляем блок только в kresd@1 перед "-- Resolve blocked domains using Proxy Resolver"
+    in_inst1 && /^[[:space:]]*-- Resolve blocked domains using Proxy Resolver$/ && inserted1==0 {
         print_warp_block()
         inserted1=1
-        print
-        next
-    }
-
-    in_inst2 && /^[[:space:]]*-- Resolve blocked domains$/ && inserted2==0 {
-        print_warp_block()
-        inserted2=1
         print
         next
     }
@@ -788,7 +816,7 @@ patch_kresd() {
     }
 
     END {
-        if (inserted1 == 0 || inserted2 == 0) exit 42
+        if (inserted1 == 0) exit 42
     }
     ' "$clean_tmp" > "$tmpfile"
     local awk_rc=$?
@@ -798,7 +826,8 @@ patch_kresd() {
     if [ "$awk_rc" -ne 0 ]; then
         rm -f "$tmpfile"
         if [ "$awk_rc" -eq 42 ]; then
-            echo -e "${RED}Не удалось найти корректные точки вставки в $KRESD_CONF.${NC}"
+            echo -e "${RED}Не удалось найти точку вставки в kresd@1.${NC}"
+            echo -e "${YELLOW}Ожидалась строка: '-- Resolve blocked domains using Proxy Resolver'${NC}"
         else
             echo -e "${RED}Ошибка при патчинге $KRESD_CONF.${NC}"
         fi
@@ -854,6 +883,24 @@ doctor() {
         fi
     }
 
+    check_warning() {
+        local label="$1"
+        local cmd="$2"
+        if eval "$cmd" >/dev/null 2>&1; then
+            echo -e " ${YELLOW}!${NC} $label"
+        else
+            echo -e " ${GREEN}✔${NC} $label"
+        fi
+    }
+
+    # Проверка ANTIZAPRET_WARP
+    if check_antizapret_warp; then
+        echo -e " ${RED}✘${NC} ANTIZAPRET_WARP=n (сейчас: ANTIZAPRET_WARP=y — WARPER не работает!)"
+        failed=1
+    else
+        echo -e " ${GREEN}✔${NC} ANTIZAPRET_WARP=n"
+    fi
+
     check_item "AntiZapret установлен" "[ -x /root/antizapret/doall.sh ] && [ -f /root/antizapret/config/include-ips.txt ]"
     check_item "Файл конфигурации warper существует" "[ -f '$CONF_FILE' ]"
     check_item "Файл списка доменов существует" "[ -f '$MASTER_FILE' ]"
@@ -865,7 +912,7 @@ doctor() {
     check_item "Службы kresd активны" "systemctl is-active --quiet kresd@1 && systemctl is-active --quiet kresd@2"
     check_item "Автопатч warper включен" "systemctl is-enabled --quiet warper-autopatch"
     check_item "kresd.conf пропатчен" "grep -q 'WARP-MOD-START' '$KRESD_CONF'"
-    check_item "В kresd.conf ровно 2 WARP-блока" "[ \"\$(grep -c 'WARP-MOD-START' '$KRESD_CONF' 2>/dev/null)\" -eq 2 ]"
+    check_item "В kresd.conf ровно 1 WARP-блок (в kresd@1)" "[ \"\$(grep -c 'WARP-MOD-START' '$KRESD_CONF' 2>/dev/null)\" -eq 1 ]"
     check_item "Права /etc/sing-box/config.json ограничены" "file_mode_is_600 '$SINGBOX_CONF'"
     check_item "Права /root/warper/warper.conf ограничены" "file_mode_is_600 '$CONF_FILE'"
     check_item "Резервная копия kresd.conf существует" "[ -f '$KRESD_BACKUP' ]"
@@ -897,6 +944,13 @@ doctor() {
 }
 
 toggle_warper() {
+    # Проверка ANTIZAPRET_WARP
+    if check_antizapret_warp; then
+        show_antizapret_warp_warning
+        read -r -p "Нажмите Enter для продолжения..."
+        return
+    fi
+
     local action="ВКЛЮЧИТЬ"
     if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
         action="ВЫКЛЮЧИТЬ"
@@ -951,664 +1005,3 @@ toggle_warper() {
 
 enable_disable_list() {
     local action="$1"
-    local list_name="$2"
-    local list_file="$DOWNLOAD_DIR/${list_name}.txt"
-    local marker="# --- ${list_name^^} ---"
-    local end_marker="# --- END ${list_name^^} ---"
-
-    if [ ! -f "$list_file" ]; then
-        echo -e "${RED}Файл списка $list_file не найден!${NC}"
-        return 1
-    fi
-
-    local valid_tmp tmp
-    valid_tmp=$(mktemp /tmp/warper_valid_list.XXXXXX)
-    tmp=$(mktemp /tmp/warper_master.XXXXXX)
-    filter_valid_domains_file "$list_file" "$valid_tmp"
-
-    rebuild_master_file "$MASTER_FILE" "$tmp"
-
-    if [ "$action" = "enable" ]; then
-        if extract_block "$tmp" "$list_name" | grep -qxF "$marker"; then
-            rm -f "$valid_tmp" "$tmp"
-            echo -e "${YELLOW}Список ${list_name^^} уже включен.${NC}"
-            return 0
-        fi
-
-        cp "$tmp" "${tmp}.new"
-        {
-            echo ""
-            echo "$marker"
-            cat "$valid_tmp"
-            echo "$end_marker"
-        } >> "${tmp}.new"
-
-        rebuild_master_file "${tmp}.new" "$MASTER_FILE"
-        rm -f "$valid_tmp" "$tmp" "${tmp}.new"
-        echo -e "${GREEN}Список ${list_name^^} включен.${NC}"
-        return 0
-    fi
-
-    if [ "$action" = "disable" ]; then
-        if extract_block "$tmp" "$list_name" | grep -qxF "$marker"; then
-            awk -v start="$marker" -v end="$end_marker" '
-            $0 == start { skip=1; next }
-            $0 == end { skip=0; next }
-            !skip { print }
-            ' "$tmp" > "${tmp}.new"
-
-            rebuild_master_file "${tmp}.new" "$MASTER_FILE"
-            rm -f "$valid_tmp" "$tmp" "${tmp}.new"
-            echo -e "${YELLOW}Список ${list_name^^} выключен.${NC}"
-            return 0
-        fi
-
-        rm -f "$valid_tmp" "$tmp"
-        echo -e "${YELLOW}Список ${list_name^^} уже выключен.${NC}"
-        return 0
-    fi
-
-    rm -f "$valid_tmp" "$tmp"
-    return 1
-}
-
-toggle_list() {
-    local list_name=$1
-    if has_list_block "$list_name"; then
-        enable_disable_list disable "$list_name"
-    else
-        enable_disable_list enable "$list_name"
-    fi
-    prompt_apply
-}
-
-update_list_blocks() {
-    for list_name in "gemini" "chatgpt"; do
-        if has_list_block "$list_name"; then
-            enable_disable_list disable "$list_name" >/dev/null 2>&1 || true
-            enable_disable_list enable "$list_name" >/dev/null 2>&1 || true
-        fi
-    done
-}
-
-update_warper() {
-    echo -e "\n${CYAN}Скачивание обновления с GitHub...${NC}"
-    mkdir -p "$DOWNLOAD_DIR"
-
-    download_file_safe "$REPO_URL/warper.sh" "$WARPER_DIR/warper.sh" "warper.sh" || return 1
-    download_file_safe "$REPO_URL/uninstaller.sh" "$WARPER_DIR/uninstaller.sh" "uninstaller.sh" || return 1
-    download_file_safe "$REPO_URL/sing-box.service" "/etc/systemd/system/sing-box.service" "sing-box.service" || return 1
-    download_file_safe "$REPO_URL/warper-autopatch.service" "/etc/systemd/system/warper-autopatch.service" "warper-autopatch.service" || return 1
-    download_file_safe "$REPO_URL/version" "$WARPER_DIR/version" "version" || return 1
-    download_file_safe "$REPO_URL/config.json.template" "$SINGBOX_TEMPLATE" "config.json.template" || return 1
-    download_file_safe "$REPO_URL/download/gemini.txt" "$DOWNLOAD_DIR/gemini.txt" "gemini.txt" || return 1
-    download_file_safe "$REPO_URL/download/chatgpt.txt" "$DOWNLOAD_DIR/chatgpt.txt" "chatgpt.txt" || return 1
-
-    chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
-    systemctl daemon-reload
-    systemctl enable warper-autopatch >/dev/null 2>&1
-
-    if [ -f "$SINGBOX_TEMPLATE" ] && [ -s "$SINGBOX_TEMPLATE" ]; then
-        echo -e "${CYAN}Обновление конфигурации sing-box из шаблона...${NC}"
-        if rebuild_config "$SINGBOX_TEMPLATE"; then
-            systemctl restart sing-box
-            if ensure_singbox_running; then
-                echo -e "${GREEN}Служба sing-box перезапущена с обновлённым конфигом.${NC}"
-            else
-                echo -e "${YELLOW}Конфиг обновлён, но служба sing-box не запустилась корректно.${NC}"
-            fi
-        else
-            echo -e "${YELLOW}Конфигурация sing-box не обновлена (ошибка извлечения ключей или валидации).${NC}"
-        fi
-    fi
-
-    rebuild_master_file
-    update_list_blocks
-
-    echo -e "${GREEN}Утилита и списки успешно обновлены!${NC}"
-    read -r -e -p "Нажмите Enter для перезапуска WARPER..."
-    exec /usr/local/bin/warper
-}
-
-settings_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}==========================================${NC}"
-        echo -e "          ⚙️  ${YELLOW}НАСТРОЙКИ WARPER${NC} ⚙️"
-        echo -e "${CYAN}==========================================${NC}"
-
-        local AP_STAT GEM_STAT GPT_STAT LOG_LEVEL MTU
-        LOG_LEVEL=$(get_log_level)
-        MTU=$(get_mtu)
-
-        if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else AP_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if has_list_block "gemini"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-        if has_list_block "chatgpt"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
-
-        echo -e " ${CYAN}1.${NC} Автопатч DNS при перезагрузке:  [$AP_STAT]"
-        echo -e " ${CYAN}2.${NC} Интеграция доменов Gemini:      [$GEM_STAT]"
-        echo -e " ${CYAN}3.${NC} Интеграция доменов ChatGPT:     [$GPT_STAT]"
-        echo -e " ${CYAN}4.${NC} Изменить фейковую подсеть:      [Текущая: $SUBNET]"
-        echo -e " ${CYAN}5.${NC} Изменить log level sing-box:    [Текущий: $LOG_LEVEL]"
-        echo -e " ${CYAN}6.${NC} Изменить MTU sing-box:          [Текущий: $MTU]"
-        echo -e " ${CYAN}0.${NC} Назад в главное меню"
-        echo -e "${CYAN}==========================================${NC}"
-        read -r -e -p "Выбор [0-6]: " set_choice
-        case "${set_choice:-}" in
-            1)
-                if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then
-                    systemctl disable warper-autopatch >/dev/null 2>&1
-                    echo -e "${YELLOW}Автопатч отключен.${NC}"; sleep 1
-                else
-                    systemctl enable warper-autopatch >/dev/null 2>&1
-                    echo -e "${GREEN}Автопатч включен.${NC}"; sleep 1
-                fi
-                ;;
-            2) toggle_list "gemini" ;;
-            3) toggle_list "chatgpt" ;;
-            4)
-                echo -e "\n${YELLOW}Внимание! Изменение подсети обновит конфигурации и перезапустит службы.${NC}"
-                read -r -e -p "Вы уверены? [y/N]: " conf_sub
-                if [[ "$conf_sub" == "y" || "$conf_sub" == "Y" ]]; then
-                    while true; do
-                        read -r -e -p "Введите новую подсеть (X.X.X.0/XX) или оставьте пустым для отмены: " new_subnet
-                        if [ -z "$new_subnet" ]; then
-                            echo -e "${YELLOW}Отмена.${NC}"; sleep 1; break
-                        elif validate_subnet "$new_subnet"; then
-                            if subnet_conflicts "$new_subnet"; then
-                                echo -e "${YELLOW}Предупреждение: подсеть $new_subnet уже может использоваться локально или Docker.${NC}"
-                                read -r -e -p "Использовать её всё равно? [y/N]: " force_subnet
-                                if [[ ! "$force_subnet" =~ ^[Yy]$ ]]; then
-                                    continue
-                                fi
-                            fi
-
-                            local old_subnet old_tun new_tun
-                            old_subnet="$SUBNET"
-                            old_tun="$TUN_IP"
-                            new_tun=$(calculate_tun_ip "$new_subnet")
-
-                            SUBNET="$new_subnet"
-                            TUN_IP="$new_tun"
-
-                            if [ -f "$SINGBOX_TEMPLATE" ] && [ -s "$SINGBOX_TEMPLATE" ]; then
-                                if ! rebuild_config "$SINGBOX_TEMPLATE"; then
-                                    SUBNET="$old_subnet"
-                                    TUN_IP="$old_tun"
-                                    echo -e "${RED}Не удалось пересобрать конфиг sing-box.${NC}"
-                                    sleep 2
-                                    break
-                                fi
-                            else
-                                sed -i "s|\"$old_subnet\"|\"$new_subnet\"|g" "$SINGBOX_CONF"
-                                sed -i "s|\"$old_tun\"|\"$new_tun\"|g" "$SINGBOX_CONF"
-                                if ! validate_singbox_config; then
-                                    sed -i "s|\"$new_subnet\"|\"$old_subnet\"|g" "$SINGBOX_CONF"
-                                    sed -i "s|\"$new_tun\"|\"$old_tun\"|g" "$SINGBOX_CONF"
-                                    SUBNET="$old_subnet"
-                                    TUN_IP="$old_tun"
-                                    echo -e "${RED}Получился некорректный конфиг sing-box, откат выполнен.${NC}"
-                                    sleep 2
-                                    break
-                                fi
-                            fi
-
-                            sed -i "\|$old_subnet|d" "$AZ_INC" 2>/dev/null
-                            grep -qxF "$new_subnet" "$AZ_INC" 2>/dev/null || echo "$new_subnet" >> "$AZ_INC"
-                            normalize_include_ips "$AZ_INC"
-
-                            {
-                                echo "SUBNET=$new_subnet"
-                                echo "TUN_IP=$new_tun"
-                            } > "$CONF_FILE"
-                            chmod 600 "$CONF_FILE"
-
-                            echo -e "${YELLOW}⏳ Обновление маршрутов AntiZapret (подождите)...${NC}"
-                            export DEBIAN_FRONTEND=noninteractive
-                            export SYSTEMD_PAGER=""
-                            bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
-
-                            echo -e "${CYAN}Перезапуск службы sing-box для применения правил...${NC}"
-                            systemctl restart sing-box
-                            if ! ensure_singbox_running; then
-                                echo -e "${RED}Служба sing-box не запустилась после смены подсети.${NC}"
-                                sleep 2
-                                break
-                            fi
-
-                            ensure_iptables_rule FORWARD -o singbox-tun
-                            ensure_iptables_rule FORWARD -i singbox-tun
-
-                            echo -e "${GREEN}Подсеть успешно изменена!${NC}"
-                            sleep 2
-                            break
-                        else
-                            echo -e "${RED}Некорректная подсеть! Ожидается формат X.X.X.0/XX с валидными октетами (0-255) и маской (1-32).${NC}"
-                        fi
-                    done
-                fi
-                ;;
-            5)
-                echo -e "\n${CYAN}Доступные уровни логирования:${NC}"
-                echo -e " ${CYAN}1.${NC} debug"
-                echo -e " ${CYAN}2.${NC} info"
-                echo -e " ${CYAN}3.${NC} warn"
-                echo -e " ${CYAN}4.${NC} error"
-                echo -e " ${CYAN}0.${NC} Отмена"
-                read -r -e -p "Выбор [0-4]: " log_choice
-                case "${log_choice:-}" in
-                    1) set_log_level "debug"; sleep 2 ;;
-                    2) set_log_level "info"; sleep 2 ;;
-                    3) set_log_level "warn"; sleep 2 ;;
-                    4) set_log_level "error"; sleep 2 ;;
-                    0) ;;
-                    *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
-                esac
-                ;;
-            6)
-                echo -e "\n${CYAN}Текущий MTU: $(get_mtu)${NC}"
-                echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
-                echo -e "${YELLOW}Рекомендуется: 1420 (по умолчанию)${NC}"
-                read -r -e -p "Введите новый MTU (или оставьте пустым для отмены): " new_mtu
-                if [ -n "$new_mtu" ]; then
-                    set_mtu "$new_mtu"
-                    sleep 2
-                fi
-                ;;
-            0) return ;;
-            *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
-        esac
-    done
-}
-
-singbox_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}==========================================${NC}"
-        echo -e "       ⚙️  ${YELLOW}УПРАВЛЕНИЕ SING-BOX${NC} ⚙️"
-        echo -e "${CYAN}==========================================${NC}"
-        if systemctl is-active --quiet sing-box; then echo -e "Текущий статус: ${GREEN}ЗАПУЩЕН 🟢${NC}"; else echo -e "Текущий статус: ${RED}ОСТАНОВЛЕН 🔴${NC}"; fi
-        if systemctl is-enabled --quiet sing-box 2>/dev/null; then echo -e "Автозагрузка: ${GREEN}ВКЛЮЧЕНА${NC}"; else echo -e "Автозагрузка: ${RED}ВЫКЛЮЧЕНА${NC}"; fi
-        echo -e "${CYAN}------------------------------------------${NC}"
-        echo -e " ${GREEN}1.${NC} Запустить службу"
-        echo -e " ${RED}2.${NC} Остановить службу"
-        echo -e " ${GREEN}3.${NC} Включить в автозагрузку"
-        echo -e " ${RED}4.${NC} Выключить из автозагрузки"
-        echo -e " ${YELLOW}5.${NC} Посмотреть логи"
-        echo -e " ${CYAN}0.${NC} Назад в главное меню"
-        echo -e "${CYAN}==========================================${NC}"
-        read -r -e -p "Выбор [0-5]: " sb_choice
-        case "${sb_choice:-}" in
-            1)
-                if prompt_confirm; then
-                    if ! validate_singbox_config; then
-                        sleep 2
-                        continue
-                    fi
-                    systemctl start sing-box
-                    if ensure_singbox_running; then
-                        echo -e "${GREEN}Запущено.${NC}"
-                    fi
-                    sleep 1
-                fi
-                ;;
-            2)
-                if prompt_confirm; then
-                    systemctl stop sing-box
-                    echo -e "${YELLOW}Остановлено.${NC}"
-                    sleep 1
-                fi
-                ;;
-            3)
-                if prompt_confirm; then
-                    systemctl enable sing-box
-                    echo -e "${GREEN}Добавлено в автозапуск.${NC}"
-                    sleep 1
-                fi
-                ;;
-            4)
-                if prompt_confirm; then
-                    systemctl disable sing-box
-                    echo -e "${YELLOW}Убрано из автозапуска.${NC}"
-                    sleep 1
-                fi
-                ;;
-            5) show_logs ;;
-            0) return ;;
-            *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
-        esac
-    done
-}
-
-show_main_menu() {
-    clear
-    local REMOTE_VER
-    REMOTE_VER=$(get_remote_version)
-
-    echo -e "${CYAN}==========================================${NC}"
-    echo -e "       🚀 ${YELLOW}Панель управления Warper${NC} 🚀"
-    echo -e "${CYAN}==========================================${NC}"
-
-    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU
-    UPDATE_AVAILABLE=false
-    LOG_LEVEL=$(get_log_level)
-    MTU=$(get_mtu)
-
-    if version_gt "$REMOTE_VER" "$LOCAL_VER"; then
-        VER_STR="${YELLOW}$LOCAL_VER (Доступно: $REMOTE_VER)${NC}"
-        UPDATE_AVAILABLE=true
-    else
-        VER_STR="${GREEN}$LOCAL_VER (Актуальная)${NC}"
-    fi
-
-    if systemctl is-active --quiet sing-box; then SB_RUN="${GREEN}запущен${NC}"; else SB_RUN="${RED}выключен${NC}"; fi
-    if systemctl is-enabled --quiet sing-box 2>/dev/null; then SB_EN="${GREEN}включена автозагрузка${NC}"; else SB_EN="${RED}отключена автозагрузка${NC}"; fi
-    if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then KR_STAT="${GREEN}пропатчен${NC}"; else KR_STAT="${RED}не пропатчен${NC}"; fi
-    if domains_in_sync; then DOM_STAT="${GREEN}синхронизированы${NC}"; else DOM_STAT="${RED}не синхронизированы${NC}"; fi
-    if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then AZ_STAT="${GREEN}добавлена${NC}"; else AZ_STAT="${RED}не добавлена${NC}"; fi
-    if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}включено${NC}"; else AP_STAT="${RED}отключено${NC}"; fi
-
-    echo -e " - Версия: $VER_STR"
-    echo -e " - Sing-box ($SB_RUN, $SB_EN)"
-    echo -e " - Sing-box log: ${CYAN}$LOG_LEVEL${NC}, MTU: ${CYAN}$MTU${NC}"
-    echo -e " - Kresd.conf ($KR_STAT)"
-    echo -e " - 📁 Домены: $MASTER_FILE ($DOM_STAT)"
-    echo -e " - Fake подсеть $SUBNET в include-ips ($AZ_STAT)"
-    echo -e " - Автовосстановление DNS ($AP_STAT)"
-
-    echo -e "${CYAN}------------------------------------------${NC}"
-    echo -e " ${GREEN}1.${NC} Добавить домен в WARP"
-    echo -e " ${RED}2.${NC} Удалить домен из WARP"
-    echo -e " ${YELLOW}3.${NC} Посмотреть список доменов"
-    echo -e " ${CYAN}4.${NC} Отредактировать список (через nano)"
-    echo -e " ${CYAN}5.${NC} 🔧 Пропатчить DNS / Синхронизация"
-    echo -e " ${CYAN}6.${NC} ⚙️ Управление sing-box"
-    echo -e " ${CYAN}7.${NC} 📄 Показать логи"
-    echo -e " ${CYAN}D.${NC} 🩺 Диагностика (doctor)"
-    echo -e " ${CYAN}S.${NC} 📊 Краткий статус"
-
-    if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
-        echo -e " ${RED}8. ⏹ Отключить WARPER${NC}"
-    else
-        echo -e " ${GREEN}8. ▶ Включить WARPER${NC}"
-    fi
-
-    echo -e " ${CYAN}9.${NC} 🛠 Настройки (Автопатч, Подсеть, Списки, Log, MTU)"
-
-    if [ "$UPDATE_AVAILABLE" = true ]; then
-        echo -e " ${YELLOW}10. ⚡ Обновить WARPER до $REMOTE_VER${NC}"
-    else
-        echo -e " ${CYAN}10.${NC} 🔄 Проверить и обновить списки доменов"
-    fi
-
-    echo -e " ${RED}U. Удалить warper полностью${NC}"
-    echo -e " ${CYAN}0.${NC} Выход"
-    echo -e "${CYAN}==========================================${NC}"
-
-    MENU_UPDATE_AVAILABLE=$UPDATE_AVAILABLE
-    MENU_REMOTE_VER=$REMOTE_VER
-}
-
-cli_add_domain() {
-    local raw="$1"
-    local domain
-    domain=$(validate_domain "$raw") || {
-        echo -e "${RED}Некорректный домен: $raw${NC}"
-        return 1
-    }
-
-    if grep -qxF "$domain" "$MASTER_FILE"; then
-        echo -e "${YELLOW}Домен уже есть в списке: $domain${NC}"
-        return 0
-    fi
-
-    insert_user_domain "$domain"
-    patch_kresd >/dev/null 2>&1 || true
-    echo -e "${GREEN}Домен добавлен и применён: $domain${NC}"
-    return 0
-}
-
-cli_remove_domain() {
-    local raw="$1"
-    local domain
-    domain=$(validate_domain "$raw") || {
-        echo -e "${RED}Некорректный домен: $raw${NC}"
-        return 1
-    }
-
-    if grep -qxF "$domain" "$MASTER_FILE"; then
-        local escaped
-        escaped=$(escape_regex "$domain")
-        sed -i "/^${escaped}$/d" "$MASTER_FILE"
-        rebuild_master_file
-        patch_kresd >/dev/null 2>&1 || true
-        echo -e "${GREEN}Домен удалён и изменения применены: $domain${NC}"
-        return 0
-    fi
-
-    echo -e "${YELLOW}Домен не найден: $domain${NC}"
-    return 0
-}
-
-cli_enable_list() {
-    local list_name="$1"
-    case "$list_name" in
-        gemini|chatgpt)
-            enable_disable_list enable "$list_name" || return 1
-            patch_kresd >/dev/null 2>&1 || true
-            ;;
-        *)
-            echo -e "${RED}Неизвестный список: $list_name${NC}"
-            return 1
-            ;;
-    esac
-}
-
-cli_disable_list() {
-    local list_name="$1"
-    case "$list_name" in
-        gemini|chatgpt)
-            enable_disable_list disable "$list_name" || return 1
-            patch_kresd >/dev/null 2>&1 || true
-            ;;
-        *)
-            echo -e "${RED}Неизвестный список: $list_name${NC}"
-            return 1
-            ;;
-    esac
-}
-
-load_config
-rebuild_master_file
-
-case "${1:-}" in
-    patch)
-        patch_kresd >/dev/null 2>&1
-        exit $?
-        ;;
-    doctor)
-        doctor
-        exit $?
-        ;;
-    status)
-        status_cmd
-        exit $?
-        ;;
-    sync)
-        patch_kresd
-        exit $?
-        ;;
-    add)
-        [ -n "${2:-}" ] || { echo "Использование: warper add DOMAIN"; exit 1; }
-        cli_add_domain "$2"
-        exit $?
-        ;;
-    remove)
-        [ -n "${2:-}" ] || { echo "Использование: warper remove DOMAIN"; exit 1; }
-        cli_remove_domain "$2"
-        exit $?
-        ;;
-    enable)
-        [ -n "${2:-}" ] || { echo "Использование: warper enable gemini|chatgpt"; exit 1; }
-        cli_enable_list "$2"
-        exit $?
-        ;;
-    disable)
-        [ -n "${2:-}" ] || { echo "Использование: warper disable gemini|chatgpt"; exit 1; }
-        cli_disable_list "$2"
-        exit $?
-        ;;
-esac
-
-MENU_UPDATE_AVAILABLE=false
-MENU_REMOTE_VER="$LOCAL_VER"
-
-while true; do
-    show_main_menu
-    read -r -e -p "Выбор: " choice
-
-    choice=$(echo "${choice:-}" | tr -d ' ')
-
-    case "$choice" in
-        1)
-            echo -e "\n${CYAN}Введите домен (например, openai.com):${NC}"
-            read -r -e -p "> " raw_domain
-            new_domain=$(validate_domain "${raw_domain:-}") || {
-                echo -e "${RED}Некорректный формат домена! Домен должен содержать точку (например, openai.com).${NC}"
-                sleep 2
-                continue
-            }
-            if grep -qxF "$new_domain" "$MASTER_FILE"; then
-                echo -e "${YELLOW}Домен уже есть в списке!${NC}"
-                sleep 1
-            else
-                insert_user_domain "$new_domain"
-                echo -e "${GREEN}Домен '$new_domain' добавлен!${NC}"
-                prompt_apply
-            fi
-            ;;
-        2)
-            echo -e "\n${CYAN}Введите домен для удаления:${NC}"
-            read -r -e -p "> " raw_del_domain
-            del_domain=$(validate_domain "${raw_del_domain:-}") || {
-                echo -e "${RED}Некорректный формат домена!${NC}"
-                sleep 2
-                continue
-            }
-            if grep -qxF "$del_domain" "$MASTER_FILE"; then
-                escaped=$(escape_regex "$del_domain")
-                sed -i "/^${escaped}$/d" "$MASTER_FILE"
-                rebuild_master_file
-                echo -e "${GREEN}Домен '$del_domain' удалён!${NC}"
-                prompt_apply
-            else
-                echo -e "${RED}Домен не найден в списке!${NC}"
-                sleep 1
-            fi
-            ;;
-        3)
-            rebuild_master_file
-            echo -e "\n${CYAN}--- Домены в WARP ---${NC}"
-            if [ -s "$MASTER_FILE" ]; then cat "$MASTER_FILE"; else echo -e "${YELLOW}Список пуст.${NC}"; fi
-            echo -e "${CYAN}---------------------${NC}"
-            read -r -p "Нажмите Enter..."
-            ;;
-        4)
-            before_hash=$(canonical_master_hash)
-            nano "$MASTER_FILE"
-            after_hash=$(canonical_master_hash)
-
-            if [ "$before_hash" != "$after_hash" ]; then
-                rebuild_master_file
-                prompt_apply
-            else
-                rebuild_master_file
-                echo -e "${YELLOW}Изменений не обнаружено.${NC}"
-                sleep 1
-            fi
-            ;;
-        5)
-            echo -e "\n${YELLOW}Запуск синхронизации...${NC}"
-            rebuild_master_file
-            if patch_kresd; then
-                echo -e "${GREEN}Готово!${NC}"
-            else
-                echo -e "${RED}Синхронизация завершилась с ошибкой.${NC}"
-            fi
-            sleep 1
-            ;;
-        6) singbox_menu ;;
-        7) show_logs ;;
-        8) toggle_warper ;;
-        9) settings_menu ;;
-        10)
-            if [ "$MENU_UPDATE_AVAILABLE" = true ]; then
-                update_warper
-            else
-                echo -e "\n${CYAN}Проверка обновлений списков...${NC}"
-                mkdir -p "$DOWNLOAD_DIR"
-
-                download_file_safe "$REPO_URL/download/gemini.txt" "/tmp/gemini.txt" "gemini.txt" || {
-                    echo -e "${RED}Не удалось обновить gemini.txt${NC}"
-                    sleep 2
-                    continue
-                }
-                download_file_safe "$REPO_URL/download/chatgpt.txt" "/tmp/chatgpt.txt" "chatgpt.txt" || {
-                    echo -e "${RED}Не удалось обновить chatgpt.txt${NC}"
-                    rm -f /tmp/gemini.txt
-                    sleep 2
-                    continue
-                }
-
-                LISTS_CHANGED=false
-
-                if ! cmp -s /tmp/gemini.txt "$DOWNLOAD_DIR/gemini.txt" 2>/dev/null; then
-                    mv /tmp/gemini.txt "$DOWNLOAD_DIR/gemini.txt"
-                    LISTS_CHANGED=true
-                else
-                    rm -f /tmp/gemini.txt
-                fi
-
-                if ! cmp -s /tmp/chatgpt.txt "$DOWNLOAD_DIR/chatgpt.txt" 2>/dev/null; then
-                    mv /tmp/chatgpt.txt "$DOWNLOAD_DIR/chatgpt.txt"
-                    LISTS_CHANGED=true
-                else
-                    rm -f /tmp/chatgpt.txt
-                fi
-
-                if [ "$LISTS_CHANGED" = true ]; then
-                    update_list_blocks
-                    echo -e "${GREEN}Найдены новые домены! Списки успешно обновлены.${NC}"
-                    prompt_apply
-                else
-                    echo -e "${GREEN}Версия и файлы актуальны, обновление не требуется.${NC}"
-                    sleep 2
-                fi
-            fi
-            ;;
-        d|D)
-            doctor
-            read -r -p "Нажмите Enter..."
-            ;;
-        s|S)
-            status_cmd
-            read -r -p "Нажмите Enter..."
-            ;;
-        u|U)
-            if [ -f "$WARPER_DIR/uninstaller.sh" ]; then
-                exec bash "$WARPER_DIR/uninstaller.sh"
-            else
-                exec curl -fsSL "$REPO_URL/uninstaller.sh?t=$(date +%s)" | bash
-            fi
-            ;;
-        0)
-                    clear
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Неверный выбор.${NC}"
-            sleep 1
-            ;;
-    esac
-done
-            
