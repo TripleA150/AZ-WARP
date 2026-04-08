@@ -1594,4 +1594,13 @@ while true; do
             fi
             ;;
         0)
+                    clear
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Неверный выбор.${NC}"
+            sleep 1
+            ;;
+    esac
+done
             
