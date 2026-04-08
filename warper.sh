@@ -328,6 +328,10 @@ set_log_level() {
         return 1
     fi
 
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+    systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
+
     rm -f "$backup"
     echo -e "${GREEN}log level изменён: ${old_level} → ${new_level}${NC}"
     return 0
@@ -403,6 +407,10 @@ set_mtu() {
         echo -e "${RED}sing-box не запустился после смены MTU, выполнен откат.${NC}"
         return 1
     fi
+
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+    systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
 
     rm -f "$backup"
     echo -e "${GREEN}MTU изменён: ${old_mtu} → ${new_mtu}${NC}"
