@@ -17,7 +17,7 @@
       "tag": "warp",
       "name": "warp-tun",
       "system": false,
-      "mtu": 1280,
+      "mtu": 1420,
       "address": [ "__WARP_ADDRESS__" ],
       "private_key": "__WARP_PRIVATE_KEY__",
       "peers": [
