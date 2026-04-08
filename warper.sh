@@ -115,6 +115,17 @@ validate_subnet() {
     return 0
 }
 
+validate_mtu() {
+    local mtu="$1"
+    if [[ ! "$mtu" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    if (( mtu < 1280 || mtu > 1500 )); then
+        return 1
+    fi
+    return 0
+}
+
 calculate_tun_ip() {
     local subnet="$1"
     local base="${subnet%.*}"
@@ -241,6 +252,169 @@ insert_user_domain() {
     mv "${tmp}.new" "$tmp"
     rebuild_master_file "$tmp" "$MASTER_FILE"
     rm -f "$tmp"
+}
+
+get_log_level() {
+    if [ -f "$SINGBOX_CONF" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.log.level // "info"' "$SINGBOX_CONF" 2>/dev/null || echo "info"
+    else
+        echo "info"
+    fi
+}
+
+set_log_level() {
+    local new_level="$1"
+
+    case "$new_level" in
+        debug|info|warn|error) ;;
+        *)
+            echo -e "${RED}Некорректный log level: $new_level${NC}"
+            return 1
+            ;;
+    esac
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}jq не найден. Невозможно безопасно изменить log level.${NC}"
+        return 1
+    fi
+
+    if [ ! -f "$SINGBOX_CONF" ]; then
+        echo -e "${RED}Файл $SINGBOX_CONF не найден.${NC}"
+        return 1
+    fi
+
+    local backup tmp old_level
+    backup=$(mktemp /tmp/singbox_config_backup.XXXXXX)
+    tmp=$(mktemp /tmp/singbox_config_new.XXXXXX)
+
+    cp -a "$SINGBOX_CONF" "$backup" || {
+        rm -f "$backup" "$tmp"
+        echo -e "${RED}Не удалось создать backup config.json.${NC}"
+        return 1
+    }
+
+    old_level=$(get_log_level)
+
+    if [ "$old_level" = "$new_level" ]; then
+        rm -f "$backup" "$tmp"
+        echo -e "${YELLOW}log level уже установлен: $new_level${NC}"
+        return 0
+    fi
+
+    if ! jq --arg lvl "$new_level" '.log.level = $lvl' "$SINGBOX_CONF" > "$tmp"; then
+        rm -f "$backup" "$tmp"
+        echo -e "${RED}Не удалось обновить log level в config.json.${NC}"
+        return 1
+    fi
+
+    mv "$tmp" "$SINGBOX_CONF"
+    chmod 600 "$SINGBOX_CONF"
+
+    if ! validate_singbox_config; then
+        cp -a "$backup" "$SINGBOX_CONF"
+        chmod 600 "$SINGBOX_CONF"
+        rm -f "$backup"
+        echo -e "${RED}Новый config.json не прошёл валидацию, выполнен откат.${NC}"
+        return 1
+    fi
+
+    systemctl restart sing-box
+    if ! ensure_singbox_running; then
+        cp -a "$backup" "$SINGBOX_CONF"
+        chmod 600 "$SINGBOX_CONF"
+        systemctl restart sing-box >/dev/null 2>&1 || true
+        rm -f "$backup"
+        echo -e "${RED}sing-box не запустился после смены log level, выполнен откат.${NC}"
+        return 1
+    fi
+
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+    systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
+
+    rm -f "$backup"
+    echo -e "${GREEN}log level изменён: ${old_level} → ${new_level}${NC}"
+    return 0
+}
+
+get_mtu() {
+    if [ -f "$SINGBOX_CONF" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.endpoints[0].mtu // 1420' "$SINGBOX_CONF" 2>/dev/null || echo "1420"
+    else
+        echo "1420"
+    fi
+}
+
+set_mtu() {
+    local new_mtu="$1"
+
+    if ! validate_mtu "$new_mtu"; then
+        echo -e "${RED}Некорректный MTU: $new_mtu (допустимо 1280-1500)${NC}"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}jq не найден. Невозможно безопасно изменить MTU.${NC}"
+        return 1
+    fi
+
+    if [ ! -f "$SINGBOX_CONF" ]; then
+        echo -e "${RED}Файл $SINGBOX_CONF не найден.${NC}"
+        return 1
+    fi
+
+    local backup tmp old_mtu
+    backup=$(mktemp /tmp/singbox_config_backup.XXXXXX)
+    tmp=$(mktemp /tmp/singbox_config_new.XXXXXX)
+
+    cp -a "$SINGBOX_CONF" "$backup" || {
+        rm -f "$backup" "$tmp"
+        echo -e "${RED}Не удалось создать backup config.json.${NC}"
+        return 1
+    }
+
+    old_mtu=$(get_mtu)
+
+    if [ "$old_mtu" = "$new_mtu" ]; then
+        rm -f "$backup" "$tmp"
+        echo -e "${YELLOW}MTU уже установлен: $new_mtu${NC}"
+        return 0
+    fi
+
+    if ! jq --argjson mtu "$new_mtu" '.endpoints[0].mtu = $mtu' "$SINGBOX_CONF" > "$tmp"; then
+        rm -f "$backup" "$tmp"
+        echo -e "${RED}Не удалось обновить MTU в config.json.${NC}"
+        return 1
+    fi
+
+    mv "$tmp" "$SINGBOX_CONF"
+    chmod 600 "$SINGBOX_CONF"
+
+    if ! validate_singbox_config; then
+        cp -a "$backup" "$SINGBOX_CONF"
+        chmod 600 "$SINGBOX_CONF"
+        rm -f "$backup"
+        echo -e "${RED}Новый config.json не прошёл валидацию, выполнен откат.${NC}"
+        return 1
+    fi
+
+    systemctl restart sing-box
+    if ! ensure_singbox_running; then
+        cp -a "$backup" "$SINGBOX_CONF"
+        chmod 600 "$SINGBOX_CONF"
+        systemctl restart sing-box >/dev/null 2>&1 || true
+        rm -f "$backup"
+        echo -e "${RED}sing-box не запустился после смены MTU, выполнен откат.${NC}"
+        return 1
+    fi
+
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+    systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
+
+    rm -f "$backup"
+    echo -e "${GREEN}MTU изменён: ${old_mtu} → ${new_mtu}${NC}"
+    return 0
 }
 
 version_gt() {
@@ -477,7 +651,7 @@ file_mode_is_600() {
 status_cmd() {
     load_config
 
-    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict
+    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu
     if systemctl is-active --quiet sing-box; then sb_run="running"; else sb_run="stopped"; fi
     if systemctl is-enabled --quiet sing-box 2>/dev/null; then sb_en="enabled"; else sb_en="disabled"; fi
     if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then kr_stat="patched"; else kr_stat="not patched"; fi
@@ -485,10 +659,14 @@ status_cmd() {
     if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then az_stat="present"; else az_stat="missing"; fi
     if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then ap_stat="enabled"; else ap_stat="disabled"; fi
     if subnet_conflicts "$SUBNET"; then subnet_conflict="yes"; else subnet_conflict="no"; fi
+    log_level=$(get_log_level)
+    mtu=$(get_mtu)
 
     echo "Version: $LOCAL_VER"
     echo "sing-box: $sb_run"
     echo "sing-box autostart: $sb_en"
+    echo "sing-box log level: $log_level"
+    echo "sing-box MTU: $mtu"
     echo "kresd patch: $kr_stat"
     echo "domains: $dom_stat"
     echo "subnet in AntiZapret: $az_stat"
@@ -688,14 +866,14 @@ doctor() {
     check_item "Автопатч warper включен" "systemctl is-enabled --quiet warper-autopatch"
     check_item "kresd.conf пропатчен" "grep -q 'WARP-MOD-START' '$KRESD_CONF'"
     check_item "В kresd.conf ровно 2 WARP-блока" "[ \"\$(grep -c 'WARP-MOD-START' '$KRESD_CONF' 2>/dev/null)\" -eq 2 ]"
+    check_item "Права /etc/sing-box/config.json ограничены" "file_mode_is_600 '$SINGBOX_CONF'"
+    check_item "Права /root/warper/warper.conf ограничены" "file_mode_is_600 '$CONF_FILE'"
     check_item "Резервная копия kresd.conf существует" "[ -f '$KRESD_BACKUP' ]"
     check_item "Домены синхронизированы" "domains_in_sync"
     check_item "Подсеть $SUBNET есть в include-ips.txt" "grep -qF '$SUBNET' '$AZ_INC'"
     check_item "Интерфейс singbox-tun существует" "ip link show singbox-tun"
     check_item "Правило iptables FORWARD -o singbox-tun существует" "iptables -C FORWARD -o singbox-tun -j ACCEPT"
     check_item "Правило iptables FORWARD -i singbox-tun существует" "iptables -C FORWARD -i singbox-tun -j ACCEPT"
-    check_item "Права /etc/sing-box/config.json ограничены" "file_mode_is_600 '$SINGBOX_CONF'"
-    check_item "Права /root/warper/warper.conf ограничены" "file_mode_is_600 '$CONF_FILE'"
 
     if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
         check_item "Права wgcf-profile.conf ограничены" "file_mode_is_600 '$WGCF_DIR/wgcf-profile.conf'"
@@ -899,7 +1077,10 @@ settings_menu() {
         echo -e "          ⚙️  ${YELLOW}НАСТРОЙКИ WARPER${NC} ⚙️"
         echo -e "${CYAN}==========================================${NC}"
 
-        local AP_STAT GEM_STAT GPT_STAT
+        local AP_STAT GEM_STAT GPT_STAT LOG_LEVEL MTU
+        LOG_LEVEL=$(get_log_level)
+        MTU=$(get_mtu)
+
         if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then AP_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else AP_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
         if has_list_block "gemini"; then GEM_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GEM_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
         if has_list_block "chatgpt"; then GPT_STAT="${GREEN}ВКЛЮЧЕНО${NC}"; else GPT_STAT="${RED}ВЫКЛЮЧЕНО${NC}"; fi
@@ -908,9 +1089,11 @@ settings_menu() {
         echo -e " ${CYAN}2.${NC} Интеграция доменов Gemini:      [$GEM_STAT]"
         echo -e " ${CYAN}3.${NC} Интеграция доменов ChatGPT:     [$GPT_STAT]"
         echo -e " ${CYAN}4.${NC} Изменить фейковую подсеть:      [Текущая: $SUBNET]"
+        echo -e " ${CYAN}5.${NC} Изменить log level sing-box:    [Текущий: $LOG_LEVEL]"
+        echo -e " ${CYAN}6.${NC} Изменить MTU sing-box:          [Текущий: $MTU]"
         echo -e " ${CYAN}0.${NC} Назад в главное меню"
         echo -e "${CYAN}==========================================${NC}"
-        read -r -e -p "Выбор [0-4]: " set_choice
+        read -r -e -p "Выбор [0-6]: " set_choice
         case "${set_choice:-}" in
             1)
                 if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then
@@ -1005,6 +1188,33 @@ settings_menu() {
                     done
                 fi
                 ;;
+            5)
+                echo -e "\n${CYAN}Доступные уровни логирования:${NC}"
+                echo -e " ${CYAN}1.${NC} debug"
+                echo -e " ${CYAN}2.${NC} info"
+                echo -e " ${CYAN}3.${NC} warn"
+                echo -e " ${CYAN}4.${NC} error"
+                echo -e " ${CYAN}0.${NC} Отмена"
+                read -r -e -p "Выбор [0-4]: " log_choice
+                case "${log_choice:-}" in
+                    1) set_log_level "debug"; sleep 2 ;;
+                    2) set_log_level "info"; sleep 2 ;;
+                    3) set_log_level "warn"; sleep 2 ;;
+                    4) set_log_level "error"; sleep 2 ;;
+                    0) ;;
+                    *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo -e "\n${CYAN}Текущий MTU: $(get_mtu)${NC}"
+                echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
+                echo -e "${YELLOW}Рекомендуется: 1420 (по умолчанию)${NC}"
+                read -r -e -p "Введите новый MTU (или оставьте пустым для отмены): " new_mtu
+                if [ -n "$new_mtu" ]; then
+                    set_mtu "$new_mtu"
+                    sleep 2
+                fi
+                ;;
             0) return ;;
             *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
         esac
@@ -1079,8 +1289,10 @@ show_main_menu() {
     echo -e "       🚀 ${YELLOW}Панель управления Warper${NC} 🚀"
     echo -e "${CYAN}==========================================${NC}"
 
-    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE
+    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU
     UPDATE_AVAILABLE=false
+    LOG_LEVEL=$(get_log_level)
+    MTU=$(get_mtu)
 
     if version_gt "$REMOTE_VER" "$LOCAL_VER"; then
         VER_STR="${YELLOW}$LOCAL_VER (Доступно: $REMOTE_VER)${NC}"
@@ -1098,6 +1310,7 @@ show_main_menu() {
 
     echo -e " - Версия: $VER_STR"
     echo -e " - Sing-box ($SB_RUN, $SB_EN)"
+    echo -e " - Sing-box log: ${CYAN}$LOG_LEVEL${NC}, MTU: ${CYAN}$MTU${NC}"
     echo -e " - Kresd.conf ($KR_STAT)"
     echo -e " - 📁 Домены: $MASTER_FILE ($DOM_STAT)"
     echo -e " - Fake подсеть $SUBNET в include-ips ($AZ_STAT)"
@@ -1120,7 +1333,7 @@ show_main_menu() {
         echo -e " ${GREEN}8. ▶ Включить WARPER${NC}"
     fi
 
-    echo -e " ${CYAN}9. 🛠 Настройки (Автопатч, Подсеть, Списки)${NC}"
+    echo -e " ${CYAN}9.${NC} 🛠 Настройки (Автопатч, Подсеть, Списки, Log, MTU)"
 
     if [ "$UPDATE_AVAILABLE" = true ]; then
         echo -e " ${YELLOW}10. ⚡ Обновить WARPER до $REMOTE_VER${NC}"
@@ -1389,7 +1602,7 @@ while true; do
             fi
             ;;
         0)
-            clear
+                    clear
             exit 0
             ;;
         *)
@@ -1398,3 +1611,4 @@ while true; do
             ;;
     esac
 done
+            
