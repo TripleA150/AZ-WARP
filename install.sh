@@ -122,6 +122,18 @@ check_antizapret() {
     echo -e " - ${GREEN}AntiZapret найден.${NC}"
 }
 
+check_antizapret_warp() {
+    local setup_file="/root/antizapret/setup"
+    if [ -f "$setup_file" ]; then
+        local az_warp
+        az_warp=$(grep -E '^ANTIZAPRET_WARP=' "$setup_file" 2>/dev/null | cut -d'=' -f2 | tr -d '"'\''[:space:]')
+        if [ "$az_warp" = "y" ]; then
+            return 0  # ANTIZAPRET_WARP включён
+        fi
+    fi
+    return 1  # ANTIZAPRET_WARP выключен или не найден
+}
+
 has_list_block() {
     local list_name="$1"
     grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
@@ -199,6 +211,31 @@ SYSTEM_ARCH=$(detect_arch)
 echo -e " - ${GREEN}Архитектура: ${SYSTEM_ARCH}${NC}"
 check_dependencies
 check_antizapret
+
+# Проверка ANTIZAPRET_WARP
+ANTIZAPRET_WARP_ENABLED=false
+if check_antizapret_warp; then
+    ANTIZAPRET_WARP_ENABLED=true
+    echo -e "\n${RED}================================================${NC}"
+    echo -e "${RED}⚠️  ВНИМАНИЕ: ANTIZAPRET_WARP=y включён!${NC}"
+    echo -e "${RED}================================================${NC}"
+    echo -e "${YELLOW}При включённом ANTIZAPRET_WARP=y WARPER не может работать,${NC}"
+    echo -e "${YELLOW}так как встроенный WARP AntiZapret конфликтует с WARPER.${NC}"
+    echo -e ""
+    echo -e "${CYAN}Установка будет продолжена, но:${NC}"
+    echo -e " - Службы sing-box и warper-autopatch НЕ будут запущены"
+    echo -e " - Патч kresd.conf НЕ будет применён"
+    echo -e ""
+    echo -e "${YELLOW}Чтобы использовать WARPER, отключите ANTIZAPRET_WARP в /root/antizapret/setup${NC}"
+    echo -e "${YELLOW}и перезапустите AntiZapret: /root/antizapret/doall.sh${NC}"
+    echo -e "${RED}================================================${NC}"
+    echo ""
+    read -r -p "Продолжить установку? (y/N): " continue_install < /dev/tty
+    if [[ ! "$continue_install" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Установка отменена.${NC}"
+        exit 0
+    fi
+fi
 
 WARPER_DIR="/root/warper"
 DOWNLOAD_DIR="$WARPER_DIR/download"
@@ -394,15 +431,20 @@ echo -e " - ${GREEN}Конфигурация sing-box создана с подс
 echo -e "\n${YELLOW}[4/8] Загрузка и настройка служб systemd...${NC}"
 download_file "$REPO_URL/sing-box.service" "/etc/systemd/system/sing-box.service" "служба sing-box.service" || exit 1
 download_file "$REPO_URL/warper-autopatch.service" "/etc/systemd/system/warper-autopatch.service" "служба warper-autopatch.service" || exit 1
-echo -e " - ${CYAN}Добавление служб в автозагрузку и запуск...${NC}"
 systemctl daemon-reload
-systemctl enable sing-box > /dev/null 2>&1
-systemctl restart sing-box
-if ! ensure_singbox_running; then
-    exit 1
+
+if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
+    echo -e " - ${YELLOW}ANTIZAPRET_WARP=y — службы НЕ будут запущены.${NC}"
+else
+    echo -e " - ${CYAN}Добавление служб в автозагрузку и запуск...${NC}"
+    systemctl enable sing-box > /dev/null 2>&1
+    systemctl restart sing-box
+    if ! ensure_singbox_running; then
+        exit 1
+    fi
+    systemctl enable warper-autopatch > /dev/null 2>&1
+    sleep 2
 fi
-systemctl enable warper-autopatch > /dev/null 2>&1
-sleep 2
 
 echo -e "\n${YELLOW}[5/8] Интеграция с маршрутами AntiZapret...${NC}"
 AZ_INC="/root/antizapret/config/include-ips.txt"
@@ -456,19 +498,36 @@ chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
 ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper
 
 echo -e "\n${YELLOW}[8/8] Применение правил DNS и Firewall...${NC}"
-echo -e " - ${CYAN}Патчинг конфигурации DNS-сервера (kresd)...${NC}"
-if ! /usr/local/bin/warper patch >/dev/null 2>&1; then
-    echo -e " - ${RED}Ошибка применения патча WARPER к kresd.${NC}"
-    exit 1
-fi
 
-echo -e " - ${CYAN}Применение разрешающих правил iptables для туннеля...${NC}"
-ensure_iptables_rule FORWARD -o singbox-tun
-ensure_iptables_rule FORWARD -i singbox-tun
+if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
+    echo -e " - ${YELLOW}ANTIZAPRET_WARP=y — патч kresd.conf НЕ будет применён.${NC}"
+    echo -e " - ${YELLOW}Правила iptables НЕ будут применены.${NC}"
+else
+    echo -e " - ${CYAN}Патчинг конфигурации DNS-сервера (kresd)...${NC}"
+    if ! /usr/local/bin/warper patch >/dev/null 2>&1; then
+        echo -e " - ${RED}Ошибка применения патча WARPER к kresd.${NC}"
+        exit 1
+    fi
+
+    echo -e " - ${CYAN}Применение разрешающих правил iptables для туннеля...${NC}"
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+fi
 
 echo -e "\n${GREEN}================================================${NC}"
 echo -e " 🎉 УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА!"
 echo -e "${GREEN}================================================${NC}"
-echo -e "Для управления доменами введите команду: ${CYAN}warper${NC}"
+
+if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
+    echo -e "${RED}⚠️  WARPER установлен, но НЕ АКТИВЕН из-за ANTIZAPRET_WARP=y${NC}"
+    echo -e "${YELLOW}Для активации:${NC}"
+    echo -e "1. Установите ANTIZAPRET_WARP=n в /root/antizapret/setup"
+    echo -e "2. Выполните: /root/antizapret/doall.sh"
+    echo -e "3. Выполните: warper"
+    echo -e "   и выберите пункт 8 для включения WARPER"
+else
+    echo -e "Для управления доменами введите команду: ${CYAN}warper${NC}"
+fi
+
 echo -e "Для диагностики используйте: ${CYAN}warper doctor${NC}"
 echo -e "Для краткого статуса используйте: ${CYAN}warper status${NC}"
