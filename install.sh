@@ -487,7 +487,7 @@ systemctl daemon-reload
 if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
     echo -e " - ${YELLOW}ANTIZAPRET_WARP=y — службы НЕ будут запущены.${NC}"
 else
-    echo -e " - ${CYAN}Добавлен��е служб в автозагрузку и запуск...${NC}"
+    echo -e " - ${CYAN}Добавление служб в автозагрузку и запуск...${NC}"
     systemctl enable sing-box > /dev/null 2>&1
     systemctl restart sing-box
     if ! ensure_singbox_running; then
