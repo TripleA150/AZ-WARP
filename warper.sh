@@ -9,15 +9,15 @@ MASTER_FILE="$WARPER_DIR/domains.txt"
 ACTIVE_FILE="/etc/knot-resolver/warper-domains.txt"
 KRESD_CONF="/etc/knot-resolver/kresd.conf"
 KRESD_BACKUP="/etc/knot-resolver/kresd.conf.warper.bak"
-AZ_INC="/root/antizapret/config/include-ips.txt"
 SINGBOX_CONF="/etc/sing-box/config.json"
 SINGBOX_TEMPLATE="$WARPER_DIR/config.json.template"
 REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/main"
 LOCAL_VER=$(cat "$WARPER_DIR/version" 2>/dev/null | tr -d '\r\n' || echo "0.0.0")
 CONF_FILE="$WARPER_DIR/warper.conf"
+WARP_SYSTEM_CONF="/etc/wireguard/warp.conf"
 
-SUBNET="198.18.0.0/24"
-TUN_IP="198.18.0.1/24"
+SUBNET="198.20.0.0/24"
+TUN_IP="198.20.0.1/24"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -83,6 +83,13 @@ show_antizapret_warp_warning() {
     echo -e "${RED}================================================${NC}"
 }
 
+is_warper_active() {
+    if systemctl is-active --quiet sing-box && grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 escape_regex() {
     printf '%s' "$1" | sed 's/[.[\*^$()+?{|\\]/\\&/g'
 }
@@ -136,14 +143,6 @@ calculate_tun_ip() {
 has_list_block() {
     local list_name="$1"
     grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
-}
-
-normalize_include_ips() {
-    local file="$1"
-    local tmp
-    [ -f "$file" ] || return 0
-    tmp=$(mktemp)
-    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 extract_user_domains() {
@@ -461,36 +460,101 @@ remove_iptables_rule() {
         iptables -D "$chain" "$iface_flag" "$iface_name" -j ACCEPT
 }
 
+# Функция получения WARP-ключей с приоритетом системного файла
 get_warp_credentials() {
     local address="" private_key=""
+
+    # Приоритет 1: ВСЕГДА проверяем /etc/wireguard/warp.conf (системный файл от AntiZapret)
+    if [ -f "$WARP_SYSTEM_CONF" ]; then
+        private_key=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        address=$(grep -m 1 '^Address' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        if [ -n "$private_key" ] && [ -n "$address" ]; then
+            # Добавляем /32 если нет маски
+            if [[ ! "$address" =~ / ]]; then
+                address="${address}/32"
+            fi
+            echo "$address"
+            echo "$private_key"
+            return 0
+        fi
+    fi
+
+    # Приоритет 2: Существующий конфиг sing-box
     if command -v jq >/dev/null 2>&1 && [ -f "$SINGBOX_CONF" ]; then
         address=$(jq -r '.endpoints[] | select(.tag=="warp") | .address[0] // empty' "$SINGBOX_CONF" 2>/dev/null || true)
         private_key=$(jq -r '.endpoints[] | select(.tag=="warp") | .private_key // empty' "$SINGBOX_CONF" 2>/dev/null || true)
-    fi
-    if [ -z "$address" ] || [ -z "$private_key" ]; then
-        if [ -f "$SINGBOX_CONF" ]; then
-            address=$(grep -o '"address": \[ "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
-            private_key=$(grep -o '"private_key": "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
+        if [ -n "$address" ] && [ -n "$private_key" ] && [ "$address" != "__WARP_ADDRESS__" ]; then
+            echo "$address"
+            echo "$private_key"
+            return 0
         fi
     fi
-    if [ -z "$address" ] || [ -z "$private_key" ] || [ "$address" = "__WARP_ADDRESS__" ]; then
-        if [ -f "/etc/wireguard/warp.conf" ]; then
-            private_key=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-            address=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-            if [ -n "$address" ] && [[ ! "$address" =~ / ]]; then address="${address}/32"; fi
+
+    # Приоритет 3: Fallback на grep для sing-box config
+    if [ -f "$SINGBOX_CONF" ]; then
+        address=$(grep -o '"address": \[ "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
+        private_key=$(grep -o '"private_key": "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
+        if [ -n "$address" ] && [ -n "$private_key" ] && [ "$address" != "__WARP_ADDRESS__" ]; then
+            echo "$address"
+            echo "$private_key"
+            return 0
         fi
     fi
-    if [ -z "$address" ] || [ -z "$private_key" ] || [ "$address" = "__WARP_ADDRESS__" ]; then
-        local wgcf_profile="$WGCF_DIR/wgcf-profile.conf"
-        if [ -f "$wgcf_profile" ]; then
-            address=$(grep -m 1 '^Address = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
-            private_key=$(grep -m 1 '^PrivateKey = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
+
+    # Приоритет 4: Профиль WARPER wgcf
+    local wgcf_profile="$WGCF_DIR/wgcf-profile.conf"
+    if [ -f "$wgcf_profile" ]; then
+        address=$(grep -m 1 '^Address = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
+        private_key=$(grep -m 1 '^PrivateKey = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$address" ] && [ -n "$private_key" ]; then
+            echo "$address"
+            echo "$private_key"
+            return 0
         fi
     fi
-    if [ -z "$address" ] || [ -z "$private_key" ]; then return 1; fi
-    echo "$address"
-    echo "$private_key"
-    return 0
+
+    return 1
+}
+
+# Проверка и синхронизация ключей с системным файлом
+check_and_sync_warp_keys() {
+    if [ ! -f "$WARP_SYSTEM_CONF" ]; then
+        return 0
+    fi
+
+    local sys_key sys_addr current_key current_addr
+    sys_key=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+    sys_addr=$(grep -m 1 '^Address' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+
+    if [ -z "$sys_key" ] || [ -z "$sys_addr" ]; then
+        return 0
+    fi
+
+    # Добавляем /32 если нет маски
+    if [[ ! "$sys_addr" =~ / ]]; then
+        sys_addr="${sys_addr}/32"
+    fi
+
+    # Получаем текущие ключи из sing-box конфига
+    if [ -f "$SINGBOX_CONF" ] && command -v jq >/dev/null 2>&1; then
+        current_key=$(jq -r '.endpoints[] | select(.tag=="warp") | .private_key // empty' "$SINGBOX_CONF" 2>/dev/null || true)
+        current_addr=$(jq -r '.endpoints[] | select(.tag=="warp") | .address[0] // empty' "$SINGBOX_CONF" 2>/dev/null || true)
+    fi
+
+    # Если ключи отличаются - обновляем конфиг
+    if [ "$sys_key" != "$current_key" ] || [ "$sys_addr" != "$current_addr" ]; then
+        echo -e "${YELLOW}Обнаружено изменение WARP-ключей в системном файле. Синхронизация...${NC}"
+        if [ -f "$SINGBOX_TEMPLATE" ]; then
+            if rebuild_config "$SINGBOX_TEMPLATE"; then
+                if systemctl is-active --quiet sing-box; then
+                    systemctl restart sing-box
+                    ensure_iptables_rule FORWARD -o singbox-tun
+                    ensure_iptables_rule FORWARD -i singbox-tun
+                fi
+                echo -e "${GREEN}Ключи WARP синхронизированы.${NC}"
+            fi
+        fi
+    fi
 }
 
 rebuild_config() {
@@ -541,12 +605,12 @@ file_mode_is_600() {
 
 status_cmd() {
     load_config
-    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu az_warp_stat
+    check_and_sync_warp_keys
+    local sb_run sb_en kr_stat dom_stat ap_stat subnet_conflict log_level mtu az_warp_stat
     if systemctl is-active --quiet sing-box; then sb_run="running"; else sb_run="stopped"; fi
     if systemctl is-enabled --quiet sing-box 2>/dev/null; then sb_en="enabled"; else sb_en="disabled"; fi
     if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then kr_stat="patched"; else kr_stat="not patched"; fi
     if domains_in_sync; then dom_stat="synced"; else dom_stat="not synced"; fi
-    if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then az_stat="present"; else az_stat="missing"; fi
     if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then ap_stat="enabled"; else ap_stat="disabled"; fi
     if subnet_conflicts "$SUBNET"; then subnet_conflict="yes"; else subnet_conflict="no"; fi
     if check_antizapret_warp; then az_warp_stat="ENABLED (conflict!)"; else az_warp_stat="disabled"; fi
@@ -560,9 +624,9 @@ status_cmd() {
     echo "sing-box MTU: $mtu"
     echo "kresd patch: $kr_stat"
     echo "domains: $dom_stat"
-    echo "subnet in AntiZapret: $az_stat"
     echo "autopatch: $ap_stat"
     echo "subnet conflict: $subnet_conflict"
+    echo "warp keys source: $([ -f "$WARP_SYSTEM_CONF" ] && echo "$WARP_SYSTEM_CONF" || echo "local")"
 }
 
 prompt_apply() {
@@ -571,6 +635,17 @@ prompt_apply() {
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+
+    # Проверяем активен ли WARPER
+    if ! is_warper_active; then
+        echo -e "\n${YELLOW}WARPER выключен. Домены сохранены, но патч DNS не применяется.${NC}"
+        echo -e "${CYAN}Синхронизация списка доменов...${NC}"
+        sync_domains
+        echo -e "${GREEN}Домены синхронизированы.${NC}"
+        read -r -p "Нажмите Enter для продолжения..."
+        return
+    fi
+
     echo -e "\n${YELLOW}Применить изменения и перезапустить DNS?${NC}"
     read -r -e -p "Выбор [Y/n] (по умолчанию Y): " apply_choice
     if [[ -z "$apply_choice" || "$apply_choice" == "Y" || "$apply_choice" == "y" ]]; then
@@ -581,6 +656,7 @@ prompt_apply() {
         fi
     else
         echo -e "${YELLOW}Домены сохранены в файл, но НЕ применены к DNS.${NC}"
+        sync_domains
     fi
     read -r -p "Нажмите Enter для продолжения..."
 }
@@ -687,6 +763,7 @@ unpatch_kresd() {
 
 doctor() {
     load_config
+    check_and_sync_warp_keys
     echo -e "${CYAN}==========================================${NC}"
     echo -e "        🩺 ${YELLOW}WARPER DOCTOR${NC}"
     echo -e "${CYAN}==========================================${NC}"
@@ -722,12 +799,17 @@ doctor() {
     check_item "Права warper.conf ограничены" "file_mode_is_600 '$CONF_FILE'"
     check_item "Резервная копия kresd.conf существует" "[ -f '$KRESD_BACKUP' ]"
     check_item "Домены синхронизированы" "domains_in_sync"
-    check_item "Подсеть $SUBNET в include-ips.txt" "grep -qF '$SUBNET' '$AZ_INC'"
     check_item "Интерфейс singbox-tun существует" "ip link show singbox-tun"
     check_item "iptables FORWARD -o singbox-tun" "iptables -C FORWARD -o singbox-tun -j ACCEPT"
     check_item "iptables FORWARD -i singbox-tun" "iptables -C FORWARD -i singbox-tun -j ACCEPT"
     if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
         check_item "Права wgcf-profile.conf ограничены" "file_mode_is_600 '$WGCF_DIR/wgcf-profile.conf'"
+    fi
+    # Проверка источника WARP-ключей
+    if [ -f "$WARP_SYSTEM_CONF" ]; then
+        echo -e " ${GREEN}✔${NC} Используются ключи из $WARP_SYSTEM_CONF"
+    else
+        echo -e " ${YELLOW}!${NC} Системный файл $WARP_SYSTEM_CONF не найден, используются локальные ключи"
     fi
     if subnet_conflicts "$SUBNET"; then
         echo -e " ${YELLOW}!${NC} Возможный конфликт fake-подсети $SUBNET"
@@ -751,6 +833,10 @@ toggle_warper() {
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+    
+    # Синхронизируем ключи перед включением
+    check_and_sync_warp_keys
+    
     local action="ВКЛЮЧИТЬ"
     if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
         action="ВЫКЛЮЧИТЬ"
@@ -870,6 +956,10 @@ update_warper() {
     chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
     systemctl daemon-reload
     systemctl enable warper-autopatch >/dev/null 2>&1
+    
+    # Проверяем и синхронизируем ключи WARP
+    check_and_sync_warp_keys
+    
     if [ -f "$SINGBOX_TEMPLATE" ] && [ -s "$SINGBOX_TEMPLATE" ]; then
         echo -e "${CYAN}Обновление конфигурации sing-box...${NC}"
         if rebuild_config "$SINGBOX_TEMPLATE"; then
@@ -951,14 +1041,8 @@ settings_menu() {
                                     echo -e "${RED}Откат выполнен.${NC}"; sleep 2; break
                                 fi
                             fi
-                            sed -i "\|$old_subnet|d" "$AZ_INC" 2>/dev/null
-                            grep -qxF "$new_subnet" "$AZ_INC" 2>/dev/null || echo "$new_subnet" >> "$AZ_INC"
-                            normalize_include_ips "$AZ_INC"
                             { echo "SUBNET=$new_subnet"; echo "TUN_IP=$new_tun"; } > "$CONF_FILE"
                             chmod 600 "$CONF_FILE"
-                            echo -e "${YELLOW}⏳ Обновление маршрутов AntiZapret...${NC}"
-                            export DEBIAN_FRONTEND=noninteractive SYSTEMD_PAGER=""
-                            bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
                             systemctl restart sing-box
                             if ! ensure_singbox_running; then sleep 2; break; fi
                             ensure_iptables_rule FORWARD -o singbox-tun
@@ -1019,6 +1103,7 @@ singbox_menu() {
         case "${sb_choice:-}" in
             1)
                 if prompt_confirm; then
+                    check_and_sync_warp_keys
                     if ! validate_singbox_config; then sleep 2; continue; fi
                     systemctl start sing-box
                     if ensure_singbox_running; then echo -e "${GREEN}Запущено.${NC}"; fi
@@ -1043,7 +1128,7 @@ show_main_menu() {
     echo -e "       🚀 ${YELLOW}Панель управления WARPER${NC} 🚀"
     echo -e "${CYAN}================================================${NC}"
     
-    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU AZ_WARP_STAT
+    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU AZ_WARP_STAT
     UPDATE_AVAILABLE=false
     LOG_LEVEL=$(get_log_level)
     MTU=$(get_mtu)
@@ -1056,9 +1141,9 @@ show_main_menu() {
     fi
     
     if check_antizapret_warp; then
-        AZ_WARP_STAT="${RED}⚠️  ANTIZAPRET_WARP=y (КОНФЛИКТ с ANTIZAPRET_WARP=y !)${NC}"
+        AZ_WARP_STAT="${RED}⚠️  ANTIZAPRET_WARP=y (КОНФЛИКТ!)${NC}"
     else
-        AZ_WARP_STAT="${GREEN}✅ OK, конфликта Warp не обнаружено ${NC}"
+        AZ_WARP_STAT="${GREEN}✅ OK${NC}"
     fi
     
     if systemctl is-active --quiet sing-box; then
@@ -1085,12 +1170,6 @@ show_main_menu() {
         DOM_STAT="${YELLOW}⚠️  требуется синхронизация${NC}"
     fi
     
-    if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
-        AZ_STAT="${GREEN}✅ добавлена${NC}"
-    else
-        AZ_STAT="${RED}❌ отсутствует${NC}"
-    fi
-    
     if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then
         AP_STAT="${GREEN}✅ включён${NC}"
     else
@@ -1108,7 +1187,7 @@ show_main_menu() {
     echo -e " 📁 ${CYAN}Домены:${NC}        $DOM_STAT"
     echo -e "    ${CYAN}Файл:${NC}          ${YELLOW}$MASTER_FILE${NC}"
     echo -e ""
-    echo -e " 🔀 ${CYAN}Fake-подсеть:${NC}  ${YELLOW}$SUBNET${NC} — $AZ_STAT"
+    echo -e " 🔀 ${CYAN}Fake-подсеть:${NC}  ${YELLOW}$SUBNET${NC}"
     echo -e " 🔄 ${CYAN}Автопатч DNS:${NC}  $AP_STAT"
     echo -e ""
     echo -e "${CYAN}------------------------------------------------${NC}"
@@ -1154,7 +1233,12 @@ cli_add_domain() {
         echo -e "${YELLOW}Домен уже есть: $domain${NC}"; return 0
     fi
     insert_user_domain "$domain"
-    patch_kresd >/dev/null 2>&1 || true
+    # Применяем патч только если WARPER активен
+    if is_warper_active; then
+        patch_kresd >/dev/null 2>&1 || true
+    else
+        sync_domains
+    fi
     echo -e "${GREEN}Домен добавлен: $domain${NC}"
     return 0
 }
@@ -1168,7 +1252,12 @@ cli_remove_domain() {
         escaped=$(escape_regex "$domain")
         sed -i "/^${escaped}$/d" "$MASTER_FILE"
         rebuild_master_file
-        patch_kresd >/dev/null 2>&1 || true
+        # Применяем патч только если WARPER активен
+        if is_warper_active; then
+            patch_kresd >/dev/null 2>&1 || true
+        else
+            sync_domains
+        fi
         echo -e "${GREEN}Домен удалён: $domain${NC}"
         return 0
     fi
@@ -1181,7 +1270,12 @@ cli_enable_list() {
     case "$list_name" in
         gemini|chatgpt)
             enable_disable_list enable "$list_name" || return 1
-            patch_kresd >/dev/null 2>&1 || true
+            # Применяем патч только если WARPER активен
+            if is_warper_active; then
+                patch_kresd >/dev/null 2>&1 || true
+            else
+                sync_domains
+            fi
             ;;
         *) echo -e "${RED}Неизвестный список: $list_name${NC}"; return 1 ;;
     esac
@@ -1192,7 +1286,12 @@ cli_disable_list() {
     case "$list_name" in
         gemini|chatgpt)
             enable_disable_list disable "$list_name" || return 1
-            patch_kresd >/dev/null 2>&1 || true
+            # Применяем патч только если WARPER активен
+            if is_warper_active; then
+                patch_kresd >/dev/null 2>&1 || true
+            else
+                sync_domains
+            fi
             ;;
         *) echo -e "${RED}Неизвестный список: $list_name${NC}"; return 1 ;;
     esac
@@ -1201,11 +1300,22 @@ cli_disable_list() {
 load_config
 rebuild_master_file
 
+# Проверяем и синхронизируем ключи WARP при каждом запуске
+check_and_sync_warp_keys
+
 case "${1:-}" in
     patch) patch_kresd >/dev/null 2>&1; exit $? ;;
     doctor) doctor; exit $? ;;
     status) status_cmd; exit $? ;;
-    sync) patch_kresd; exit $? ;;
+    sync)
+        if is_warper_active; then
+            patch_kresd
+        else
+            sync_domains
+            echo -e "${GREEN}Домены синхронизированы.${NC}"
+        fi
+        exit $?
+        ;;
     add) [ -n "${2:-}" ] || { echo "Использование: warper add DOMAIN"; exit 1; }; cli_add_domain "$2"; exit $? ;;
     remove) [ -n "${2:-}" ] || { echo "Использование: warper remove DOMAIN"; exit 1; }; cli_remove_domain "$2"; exit $? ;;
     enable) [ -n "${2:-}" ] || { echo "Использование: warper enable gemini|chatgpt"; exit 1; }; cli_enable_list "$2"; exit $? ;;
@@ -1272,7 +1382,12 @@ while true; do
         5)
             echo -e "\n${YELLOW}Запуск синхронизации...${NC}"
             rebuild_master_file
-            if patch_kresd; then echo -e "${GREEN}Готово!${NC}"; else echo -e "${RED}Ошибка синхронизации.${NC}"; fi
+            if is_warper_active; then
+                if patch_kresd; then echo -e "${GREEN}Готово!${NC}"; else echo -e "${RED}Ошибка синхронизации.${NC}"; fi
+            else
+                sync_domains
+                echo -e "${GREEN}Домены синхронизированы. WARPER выключен — патч DNS не применён.${NC}"
+            fi
             sleep 1
             ;;
         6) singbox_menu ;;
