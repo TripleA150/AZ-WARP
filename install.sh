@@ -84,14 +84,14 @@ check_os() {
             fi
             ;;
         debian)
-            if [[ "$VERSION_ID" == "11" || "$VERSION_ID" == "12" ]]; then
+            if [[ "$VERSION_ID" == "12" || "$VERSION_ID" == "13" ]]; then
                 supported=true
             fi
             ;;
     esac
     if [ "$supported" = false ]; then
         echo -e "${RED}Неподдерживаемая ОС: $PRETTY_NAME${NC}"
-        echo -e "${YELLOW}Поддерживаются: Ubuntu 22.04/24.04, Debian 11/12${NC}"
+        echo -e "${YELLOW}Поддерживаются: Ubuntu 22.04/24.04, Debian 12/13${NC}"
         exit 1
     fi
     echo -e " - ${GREEN}ОС: $PRETTY_NAME — поддерживается.${NC}"
@@ -136,7 +136,8 @@ check_antizapret_warp() {
 
 has_list_block() {
     local list_name="$1"
-    grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
+    local file="$2"
+    [ -f "$file" ] && grep -qxF "# --- ${list_name^^} ---" "$file" 2>/dev/null
 }
 
 normalize_include_ips() {
@@ -208,7 +209,6 @@ ensure_iptables_rule() {
 # Функция поиска существующих WARP-ключей
 find_existing_warp_keys() {
     local address="" private_key=""
-    local source=""
 
     # Приоритет 1: /etc/wireguard/warp.conf (от AntiZapret WARP)
     if [ -f "/etc/wireguard/warp.conf" ]; then
@@ -275,7 +275,7 @@ if check_antizapret_warp; then
     echo -e " - Патч kresd.conf НЕ будет применён"
     echo -e ""
     echo -e "${YELLOW}Чтобы использовать WARPER, отключите ANTIZAPRET_WARP в /root/antizapret/setup${NC}"
-    echo -e "${YELLOW}и перезапустите AntiZapret: /root/antizapret/doall.sh${NC}"
+    echo -e "${YELLOW}и выполните: /root/antizapret/down.sh && /root/antizapret/up.sh${NC}"
     echo -e "${RED}================================================${NC}"
     echo ""
     read -r -p "Продолжить установку? (y/N): " continue_install < /dev/tty
@@ -295,6 +295,7 @@ SINGBOX_TEMPLATE="$WARPER_DIR/config.json.template"
 
 mkdir -p "$WARPER_DIR" "$DOWNLOAD_DIR" "$WGCF_DIR"
 
+# Создаём файл domains.txt только если его нет
 if [ ! -f "$MASTER_FILE" ]; then
 cat << 'EOF' > "$MASTER_FILE"
 # ==========================================
@@ -309,12 +310,12 @@ fi
 
 ADD_GEMINI="n"
 ADD_CHATGPT="n"
-SUBNET="198.18.0.0/24"
-TUN_IP="198.18.0.1/24"
+SUBNET="198.20.0.0/24"
+TUN_IP="198.20.0.1/24"
 
 echo -e "\n${YELLOW}⚙️  Настройка маршрутизации доменов${NC}"
 
-if has_list_block "gemini"; then
+if has_list_block "gemini" "$MASTER_FILE"; then
     echo -e "${GREEN}✔ Домены Gemini уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -331,7 +332,7 @@ else
     done
 fi
 
-if has_list_block "chatgpt"; then
+if has_list_block "chatgpt" "$MASTER_FILE"; then
     echo -e "${GREEN}✔ Домены ChatGPT уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -500,7 +501,8 @@ fi
 echo -e "\n${YELLOW}[5/8] Интеграция с маршрутами AntiZapret...${NC}"
 AZ_INC="/root/antizapret/config/include-ips.txt"
 if [ -f "$AZ_INC" ]; then
-    sed -i '\|10.255.0.0/24|d' "$AZ_INC" 2>/dev/null
+    # Удаляем старую подсеть если была
+    sed -i '\|198.18.0.0/24|d' "$AZ_INC" 2>/dev/null
     if ! grep -qxF "$SUBNET" "$AZ_INC"; then
         echo -e " - ${CYAN}Добавление подсети $SUBNET в include-ips.txt...${NC}"
         echo "$SUBNET" >> "$AZ_INC"
@@ -524,7 +526,7 @@ echo -e "\n${YELLOW}[7/8] Настройка списка доменов и ут
 
 if [ "$ADD_GEMINI" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов Gemini в мастер-файл...${NC}"
-    if ! has_list_block "gemini"; then
+    if ! has_list_block "gemini" "$MASTER_FILE"; then
         echo "# --- GEMINI ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/gemini.txt" >> "$MASTER_FILE"
         echo "# --- END GEMINI ---" >> "$MASTER_FILE"
@@ -533,7 +535,7 @@ fi
 
 if [ "$ADD_CHATGPT" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов ChatGPT в мастер-файл...${NC}"
-    if ! has_list_block "chatgpt"; then
+    if ! has_list_block "chatgpt" "$MASTER_FILE"; then
         echo "# --- CHATGPT ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/chatgpt.txt" >> "$MASTER_FILE"
         echo "# --- END CHATGPT ---" >> "$MASTER_FILE"
@@ -573,8 +575,9 @@ if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
     echo -e "${RED}⚠️  WARPER установлен, но НЕ АКТИВЕН из-за ANTIZAPRET_WARP=y${NC}"
     echo -e "${YELLOW}Для активации:${NC}"
     echo -e "1. Установите ANTIZAPRET_WARP=n в /root/antizapret/setup"
-    echo -e "2. Выполните: /root/antizapret/doall.sh"
-    echo -e "3. Выполните: warper"
+    echo -e "2. Выполните: /root/antizapret/down.sh"
+    echo -e "3. Выполните: /root/antizapret/up.sh"
+    echo -e "4. Выполните: warper"
     echo -e "   и выберите пункт 8 для включения WARPER"
 else
     echo -e "Для управления доменами введите команду: ${CYAN}warper${NC}"
