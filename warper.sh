@@ -70,6 +70,57 @@ check_antizapret_warp() {
     return 1
 }
 
+check_vpn_warp() {
+    local setup_file="/root/antizapret/setup"
+    if [ -f "$setup_file" ]; then
+        local vpn_warp
+        vpn_warp=$(grep -E '^VPN_WARP=' "$setup_file" 2>/dev/null | cut -d'=' -f2 | tr -d '"'\''[:space:]')
+        if [ "$vpn_warp" = "y" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Проверка наличия активных правил от up.sh (интерфейс warp или ip rule lookup 13335)
+check_warp_rules_active() {
+    # Проверяем наличие интерфейса warp
+    if ip link show warp >/dev/null 2>&1; then
+        return 0
+    fi
+    # Проверяем наличие ip rule с lookup 13335
+    if ip rule show 2>/dev/null | grep -q "lookup 13335"; then
+        return 0
+    fi
+    return 1
+}
+
+# Проверка нужно ли запустить down.sh
+needs_down_sh() {
+    # Если VPN_WARP=n и ANTIZAPRET_WARP=n, но правила от up.sh ещё активны
+    if ! check_vpn_warp && ! check_antizapret_warp; then
+        if check_warp_rules_active; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+show_down_sh_warning() {
+    echo -e "${RED}================================================${NC}"
+    echo -e "${RED}⚠️  Обнаружены активные правила от AntiZapret WARP!${NC}"
+    echo -e "${RED}================================================${NC}"
+    echo -e "${YELLOW}VPN_WARP и ANTIZAPRET_WARP выключены, но правила${NC}"
+    echo -e "${YELLOW}от предыдущего запуска up.sh ещё активны.${NC}"
+    echo -e ""
+    echo -e "${CYAN}Для корректной работы WARPER выполните:${NC}"
+    echo -e "  ${GREEN}/root/antizapret/down.sh${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Это отключит старые WARP-правила и позволит${NC}"
+    echo -e "${YELLOW}WARPER использовать локальные ключи.${NC}"
+    echo -e "${RED}================================================${NC}"
+}
+
 show_antizapret_warp_warning() {
     echo -e "${RED}================================================${NC}"
     echo -e "${RED}⚠️  ANTIZAPRET_WARP=y включён!${NC}"
@@ -79,7 +130,7 @@ show_antizapret_warp_warning() {
     echo -e ""
     echo -e "${CYAN}Для использования WARPER:${NC}"
     echo -e "1. Установите ANTIZAPRET_WARP=n в /root/antizapret/setup"
-    echo -e "2. Выполните: /root/antizapret/doall.sh"
+    echo -e "2. Выполните: /root/antizapret/down.sh"
     echo -e "3. Запустите: warper"
     echo -e "${RED}================================================${NC}"
 }
@@ -527,6 +578,13 @@ get_warp_credentials() {
 
 # Проверка и синхронизация ключей с системным файлом
 check_and_sync_warp_keys() {
+    # Сначала проверяем, нужно ли запустить down.sh
+    if needs_down_sh; then
+        show_down_sh_warning
+        read -r -p "Нажмите Enter для продолжения..."
+        return 1
+    fi
+
     if [ ! -f "$WARP_SYSTEM_CONF" ]; then
         return 0
     fi
@@ -614,8 +672,7 @@ file_mode_is_600() {
 
 status_cmd() {
     load_config
-    check_and_sync_warp_keys
-    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu az_warp_stat
+    local sb_run sb_en kr_stat dom_stat az_stat ap_stat subnet_conflict log_level mtu az_warp_stat warp_rules_stat
     if systemctl is-active --quiet sing-box; then sb_run="running"; else sb_run="stopped"; fi
     if systemctl is-enabled --quiet sing-box 2>/dev/null; then sb_en="enabled"; else sb_en="disabled"; fi
     if grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then kr_stat="patched"; else kr_stat="not patched"; fi
@@ -624,10 +681,13 @@ status_cmd() {
     if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then ap_stat="enabled"; else ap_stat="disabled"; fi
     if subnet_conflicts "$SUBNET"; then subnet_conflict="yes"; else subnet_conflict="no"; fi
     if check_antizapret_warp; then az_warp_stat="ENABLED (conflict!)"; else az_warp_stat="disabled"; fi
+    if check_warp_rules_active; then warp_rules_stat="active (run down.sh!)"; else warp_rules_stat="inactive"; fi
     log_level=$(get_log_level)
     mtu=$(get_mtu)
     echo "Version: $LOCAL_VER"
     echo "ANTIZAPRET_WARP: $az_warp_stat"
+    echo "VPN_WARP: $(check_vpn_warp && echo "enabled" || echo "disabled")"
+    echo "WARP rules from up.sh: $warp_rules_stat"
     echo "sing-box: $sb_run"
     echo "sing-box autostart: $sb_en"
     echo "sing-box log level: $log_level"
@@ -643,6 +703,13 @@ status_cmd() {
 prompt_apply() {
     if check_antizapret_warp; then
         echo -e "\n${RED}⚠️  ANTIZAPRET_WARP=y — изменения НЕ будут применены к DNS.${NC}"
+        read -r -p "Нажмите Enter для продолжения..."
+        return
+    fi
+
+    # Проверяем нужно ли запустить down.sh
+    if needs_down_sh; then
+        show_down_sh_warning
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
@@ -692,6 +759,13 @@ patch_kresd() {
         echo -e "${RED}ANTIZAPRET_WARP=y — патч kresd.conf не может быть применён.${NC}"
         return 1
     fi
+
+    # Проверяем нужно ли запустить down.sh
+    if needs_down_sh; then
+        echo -e "${RED}Активны правила от up.sh — сначала выполните /root/antizapret/down.sh${NC}"
+        return 1
+    fi
+
     sync_domains
     if [ ! -f "$KRESD_CONF" ]; then
         echo -e "${RED}Файл $KRESD_CONF не найден.${NC}"
@@ -774,7 +848,6 @@ unpatch_kresd() {
 
 doctor() {
     load_config
-    check_and_sync_warp_keys
     echo -e "${CYAN}==========================================${NC}"
     echo -e "        🩺 ${YELLOW}WARPER DOCTOR${NC}"
     echo -e "${CYAN}==========================================${NC}"
@@ -794,6 +867,15 @@ doctor() {
     else
         echo -e " ${GREEN}✔${NC} ANTIZAPRET_WARP=n"
     fi
+
+    # Проверка на активные правила от up.sh
+    if needs_down_sh; then
+        echo -e " ${RED}✘${NC} Правила от up.sh неактивны (сейчас: активны — выполните /root/antizapret/down.sh!)"
+        failed=1
+    else
+        echo -e " ${GREEN}✔${NC} Правила от up.sh неактивны"
+    fi
+
     check_item "AntiZapret установлен" "[ -x /root/antizapret/doall.sh ]"
     check_item "Файл конфигурации warper существует" "[ -f '$CONF_FILE' ]"
     check_item "Файл списка доменов существует" "[ -f '$MASTER_FILE' ]"
@@ -845,9 +927,16 @@ toggle_warper() {
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+
+    # Проверяем нужно ли запустить down.sh
+    if needs_down_sh; then
+        show_down_sh_warning
+        read -r -p "Нажмите Enter для продолжения..."
+        return
+    fi
     
     # Синхронизируем ключи перед включением
-    check_and_sync_warp_keys
+    check_and_sync_warp_keys || return
     
     local action="ВКЛЮЧИТЬ"
     if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
@@ -1121,7 +1210,13 @@ singbox_menu() {
         case "${sb_choice:-}" in
             1)
                 if prompt_confirm; then
-                    check_and_sync_warp_keys
+                    # Проверяем нужно ли запустить down.sh
+                    if needs_down_sh; then
+                        show_down_sh_warning
+                        sleep 2
+                        continue
+                    fi
+                    check_and_sync_warp_keys || continue
                     if ! validate_singbox_config; then sleep 2; continue; fi
                     systemctl start sing-box
                     if ensure_singbox_running; then echo -e "${GREEN}Запущено.${NC}"; fi
@@ -1146,7 +1241,7 @@ show_main_menu() {
     echo -e "       🚀 ${YELLOW}Панель управления WARPER${NC} 🚀"
     echo -e "${CYAN}================================================${NC}"
     
-    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU AZ_WARP_STAT
+    local VER_STR SB_RUN SB_EN KR_STAT DOM_STAT AZ_STAT AP_STAT UPDATE_AVAILABLE LOG_LEVEL MTU AZ_WARP_STAT WARP_RULES_STAT
     UPDATE_AVAILABLE=false
     LOG_LEVEL=$(get_log_level)
     MTU=$(get_mtu)
@@ -1162,6 +1257,13 @@ show_main_menu() {
         AZ_WARP_STAT="${RED}⚠️  ANTIZAPRET_WARP=y (КОНФЛИКТ!)${NC}"
     else
         AZ_WARP_STAT="${GREEN}✅ OK${NC}"
+    fi
+
+    # Проверка на активные правила от up.sh
+    if needs_down_sh; then
+        WARP_RULES_STAT="${RED}⚠️  Требуется /root/antizapret/down.sh${NC}"
+    else
+        WARP_RULES_STAT="${GREEN}✅ OK${NC}"
     fi
     
     if systemctl is-active --quiet sing-box; then
@@ -1203,6 +1305,7 @@ show_main_menu() {
     echo -e ""
     echo -e " 📌 ${CYAN}Версия:${NC}        $VER_STR"
     echo -e " 🔗 ${CYAN}AntiZapret:${NC}    $AZ_WARP_STAT"
+    echo -e " 🔄 ${CYAN}WARP правила:${NC}  $WARP_RULES_STAT"
     echo -e ""
     echo -e " 📡 ${CYAN}Sing-box:${NC}      $SB_RUN | Автозагрузка: $SB_EN"
     echo -e " ⚙️  ${CYAN}Параметры:${NC}    Log: ${CYAN}$LOG_LEVEL${NC} | MTU: ${CYAN}$MTU${NC}"
@@ -1241,7 +1344,7 @@ show_main_menu() {
     fi
     
     echo -e "${CYAN}------------------------------------------------${NC}"
-    echo -e " ${RED}U.${NC} 🗑️  Удалить WARPER полностью"
+        echo -e " ${RED}U.${NC} 🗑️  Удалить WARPER полностью"
     echo -e " ${CYAN}0.${NC} 🚪 Выход"
     echo -e "${CYAN}================================================${NC}"
     
@@ -1324,7 +1427,7 @@ cli_disable_list() {
 load_config
 rebuild_master_file
 
-# Проверяем и синхронизируем ключи WARP при каждом запуске
+# Проверяем и синхронизируем ключи WARP при каждом запуске (с проверкой down.sh)
 check_and_sync_warp_keys
 
 case "${1:-}" in
@@ -1400,7 +1503,7 @@ while true; do
                 prompt_apply
             else
                 rebuild_master_file
-                echo -e "${YELLOW}Изменений не обнаружено.${NC}"; sleep 1
+                echo -e "${YELLOW}Измене��ий не обнаружено.${NC}"; sleep 1
             fi
             ;;
         5)
