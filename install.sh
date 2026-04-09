@@ -84,14 +84,14 @@ check_os() {
             fi
             ;;
         debian)
-            if [[ "$VERSION_ID" == "11" || "$VERSION_ID" == "12" ]]; then
+            if [[ "$VERSION_ID" == "12" || "$VERSION_ID" == "13" ]]; then
                 supported=true
             fi
             ;;
     esac
     if [ "$supported" = false ]; then
         echo -e "${RED}Неподдерживаемая ОС: $PRETTY_NAME${NC}"
-        echo -e "${YELLOW}Поддерживаются: Ubuntu 22.04/24.04, Debian 11/12${NC}"
+        echo -e "${YELLOW}Поддерживаются: Ubuntu 22.04/24.04, Debian 12/13${NC}"
         exit 1
     fi
     echo -e " - ${GREEN}ОС: $PRETTY_NAME — поддерживается.${NC}"
@@ -136,15 +136,8 @@ check_antizapret_warp() {
 
 has_list_block() {
     local list_name="$1"
-    grep -qxF "# --- ${list_name^^} ---" "$MASTER_FILE" 2>/dev/null
-}
-
-normalize_include_ips() {
-    local file="$1"
-    local tmp
-    [ -f "$file" ] || return 0
-    tmp=$(mktemp)
-    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
+    local file="$2"
+    [ -f "$file" ] && grep -qxF "# --- ${list_name^^} ---" "$file" 2>/dev/null
 }
 
 subnet_conflicts() {
@@ -208,7 +201,6 @@ ensure_iptables_rule() {
 # Функция поиска существующих WARP-ключей
 find_existing_warp_keys() {
     local address="" private_key=""
-    local source=""
 
     # Приоритет 1: /etc/wireguard/warp.conf (от AntiZapret WARP)
     if [ -f "/etc/wireguard/warp.conf" ]; then
@@ -253,7 +245,7 @@ find_existing_warp_keys() {
     return 1
 }
 
-echo -e "\n${YELLOW}[0/8] Предварительные проверки...${NC}"
+echo -e "\n${YELLOW}[0/7] Предварительные проверки...${NC}"
 check_os
 SYSTEM_ARCH=$(detect_arch)
 echo -e " - ${GREEN}Архитектура: ${SYSTEM_ARCH}${NC}"
@@ -295,6 +287,7 @@ SINGBOX_TEMPLATE="$WARPER_DIR/config.json.template"
 
 mkdir -p "$WARPER_DIR" "$DOWNLOAD_DIR" "$WGCF_DIR"
 
+# Создаём файл domains.txt только если его нет
 if [ ! -f "$MASTER_FILE" ]; then
 cat << 'EOF' > "$MASTER_FILE"
 # ==========================================
@@ -309,12 +302,12 @@ fi
 
 ADD_GEMINI="n"
 ADD_CHATGPT="n"
-SUBNET="198.18.0.0/24"
-TUN_IP="198.18.0.1/24"
+SUBNET="198.20.0.0/24"
+TUN_IP="198.20.0.1/24"
 
 echo -e "\n${YELLOW}⚙️  Настройка маршрутизации доменов${NC}"
 
-if has_list_block "gemini"; then
+if has_list_block "gemini" "$MASTER_FILE"; then
     echo -e "${GREEN}✔ Домены Gemini уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -331,7 +324,7 @@ else
     done
 fi
 
-if has_list_block "chatgpt"; then
+if has_list_block "chatgpt" "$MASTER_FILE"; then
     echo -e "${GREEN}✔ Домены ChatGPT уже присутствуют в списке. Пропускаем.${NC}"
 else
     while true; do
@@ -385,7 +378,7 @@ echo -e "${GREEN}✔ Подсеть $SUBNET установлена.${NC}"
 
 echo -e "\n${CYAN}Начинаем процесс установки...${NC}"
 
-echo -e "\n${YELLOW}[1/8] Установка ядра sing-box...${NC}"
+echo -e "\n${YELLOW}[1/7] Установка ядра sing-box...${NC}"
 if command -v sing-box >/dev/null 2>&1; then
     CURRENT_SB=$(sing-box version 2>/dev/null | head -n 1 | awk '{print $3}')
     if [ "$CURRENT_SB" == "$SB_VERSION" ]; then
@@ -399,7 +392,7 @@ else
     curl -fsSL https://sing-box.app/install.sh | bash -s -- --version "$SB_VERSION" >/dev/null 2>&1
 fi
 
-echo -e "\n${YELLOW}[2/8] Получение ключей Cloudflare WARP...${NC}"
+echo -e "\n${YELLOW}[2/7] Получение ключей Cloudflare WARP...${NC}"
 cd "$WGCF_DIR" || exit 1
 
 # Поиск существующих ключей
@@ -458,7 +451,7 @@ if [ -z "$WARP_ADDRESS" ] || [ -z "$WARP_PRIVATE_KEY" ]; then
 fi
 echo -e " - ${GREEN}Ключи успешно получены!${NC}"
 
-echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IPv4 only)...${NC}"
+echo -e "\n${YELLOW}[3/7] Создание конфигурации sing-box (IPv4 only)...${NC}"
 echo -e " - ${CYAN}Загрузка шаблона и генерация $SINGBOX_CONF...${NC}"
 mkdir -p /etc/sing-box
 
@@ -479,7 +472,7 @@ fi
 
 echo -e " - ${GREEN}Конфигурация sing-box создана с подсетью $SUBNET.${NC}"
 
-echo -e "\n${YELLOW}[4/8] Загрузка и настройка служб systemd...${NC}"
+echo -e "\n${YELLOW}[4/7] Загрузка и настройка служб systemd...${NC}"
 download_file "$REPO_URL/sing-box.service" "/etc/systemd/system/sing-box.service" "служба sing-box.service" || exit 1
 download_file "$REPO_URL/warper-autopatch.service" "/etc/systemd/system/warper-autopatch.service" "служба warper-autopatch.service" || exit 1
 systemctl daemon-reload
@@ -497,34 +490,15 @@ else
     sleep 2
 fi
 
-echo -e "\n${YELLOW}[5/8] Интеграция с маршрутами AntiZapret...${NC}"
-AZ_INC="/root/antizapret/config/include-ips.txt"
-if [ -f "$AZ_INC" ]; then
-    sed -i '\|10.255.0.0/24|d' "$AZ_INC" 2>/dev/null
-    if ! grep -qxF "$SUBNET" "$AZ_INC"; then
-        echo -e " - ${CYAN}Добавление подсети $SUBNET в include-ips.txt...${NC}"
-        echo "$SUBNET" >> "$AZ_INC"
-        normalize_include_ips "$AZ_INC"
-        echo -e " - ${YELLOW}⏳ Запуск doall.sh (обновление конфигурации AntiZapret, от 1 до 5 минут)...${NC}"
-        export DEBIAN_FRONTEND=noninteractive
-        export SYSTEMD_PAGER=""
-        bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
-        echo -e " - ${GREEN}Конфигурация маршрутов успешно обновлена!${NC}"
-    else
-        normalize_include_ips "$AZ_INC"
-        echo -e " - ${GREEN}Подсеть $SUBNET уже присутствует в include-ips.txt.${NC}"
-    fi
-fi
-
-echo -e "\n${YELLOW}[6/8] Скачивание базовых списков с GitHub...${NC}"
+echo -e "\n${YELLOW}[5/7] Скачивание базовых списков с GitHub...${NC}"
 download_file "$REPO_URL/download/gemini.txt" "$DOWNLOAD_DIR/gemini.txt" "список доменов Gemini" || exit 1
 download_file "$REPO_URL/download/chatgpt.txt" "$DOWNLOAD_DIR/chatgpt.txt" "список доменов ChatGPT" || exit 1
 
-echo -e "\n${YELLOW}[7/8] Настройка списка доменов и утилиты WARPER...${NC}"
+echo -e "\n${YELLOW}[6/7] Настройка списка доменов и утилиты WARPER...${NC}"
 
 if [ "$ADD_GEMINI" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов Gemini в мастер-файл...${NC}"
-    if ! has_list_block "gemini"; then
+    if ! has_list_block "gemini" "$MASTER_FILE"; then
         echo "# --- GEMINI ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/gemini.txt" >> "$MASTER_FILE"
         echo "# --- END GEMINI ---" >> "$MASTER_FILE"
@@ -533,7 +507,7 @@ fi
 
 if [ "$ADD_CHATGPT" == "y" ]; then
     echo -e " - ${CYAN}Интеграция доменов ChatGPT в мастер-файл...${NC}"
-    if ! has_list_block "chatgpt"; then
+    if ! has_list_block "chatgpt" "$MASTER_FILE"; then
         echo "# --- CHATGPT ---" >> "$MASTER_FILE"
         cat "$DOWNLOAD_DIR/chatgpt.txt" >> "$MASTER_FILE"
         echo "# --- END CHATGPT ---" >> "$MASTER_FILE"
@@ -548,7 +522,7 @@ download_file "$REPO_URL/version" "$WARPER_DIR/version" "файл версии" 
 chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
 ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper
 
-echo -e "\n${YELLOW}[8/8] Применение правил DNS и Firewall...${NC}"
+echo -e "\n${YELLOW}[7/7] Применение правил DNS и Firewall...${NC}"
 
 if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
     echo -e " - ${YELLOW}ANTIZAPRET_WARP=y — патч kresd.conf НЕ будет применён.${NC}"
