@@ -579,6 +579,7 @@ get_warp_credentials() {
 }
 
 # Проверка и синхронизация ключей с системным файлом
+# Проверка и синхронизация ключей с системным файлом
 check_and_sync_warp_keys() {
     # Сначала проверяем, нужно ли запустить down.sh
     if needs_down_sh; then
@@ -620,6 +621,8 @@ check_and_sync_warp_keys() {
                     ensure_iptables_rule FORWARD -o singbox-tun
                     ensure_iptables_rule FORWARD -i singbox-tun
                 fi
+                # Перезапускаем kresd@1 для применения новых ключей
+                systemctl restart kresd@1 >/dev/null 2>&1 || true
                 echo -e "${GREEN}Ключи WARP синхронизированы.${NC}"
             fi
         fi
@@ -1070,6 +1073,8 @@ update_warper() {
             if ensure_singbox_running; then
                 echo -e "${GREEN}Служба sing-box перезапущена.${NC}"
             fi
+            # Перезапускаем kresd@1 после обновления конфига
+            systemctl restart kresd@1 >/dev/null 2>&1 || true
         fi
     fi
     rebuild_master_file
@@ -1078,7 +1083,6 @@ update_warper() {
     read -r -e -p "Нажмите Enter для перезапуска WARPER..."
     exec /usr/local/bin/warper
 }
-
 settings_menu() {
     while true; do
         clear
