@@ -11,12 +11,26 @@ NC='\033[0m'
 echo -e "${RED}================================================${NC}"
 echo -e " 🗑️ УДАЛЕНИЕ WARPER И SING-BOX"
 echo -e "${RED}================================================${NC}"
-echo -e "Эта команда полностью удалит службу туннеля и очистит настройки DNS."
+echo -e "Эта команда полностью удалит службу туннеля, очистит настройки DNS и маршруты."
 
 remove_iptables_rule() {
     local chain="$1" iface_flag="$2" iface_name="$3"
     iptables -C "$chain" "$iface_flag" "$iface_name" -j ACCEPT 2>/dev/null && \
         iptables -D "$chain" "$iface_flag" "$iface_name" -j ACCEPT
+}
+
+load_config_value() {
+    local key="$1"
+    local file="$2"
+    grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d'=' -f2- | tr -d '"'\''[:space:]'
+}
+
+normalize_include_ips() {
+    local file="$1"
+    local tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    awk 'NF && !seen[$0]++' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 while true; do
@@ -43,6 +57,15 @@ while true; do
         echo -e "${RED}Ошибка: Пожалуйста, введите Y (да) или n (нет).${NC}"
     fi
 done
+
+CONF_FILE="/root/warper/warper.conf"
+SUBNET="198.20.0.0/24"
+if [ -f "$CONF_FILE" ]; then
+    loaded_subnet=$(load_config_value "SUBNET" "$CONF_FILE")
+    if [ -n "$loaded_subnet" ]; then
+        SUBNET="$loaded_subnet"
+    fi
+fi
 
 echo -e "\n${YELLOW}1. Остановка и удаление служб...${NC}"
 echo -e " - ${CYAN}Остановка демона sing-box...${NC}"
@@ -84,11 +107,30 @@ else
     echo -e " - ${GREEN}kresd.conf уже чист.${NC}"
 fi
 
-echo -e "\n${YELLOW}4. Удаление правил firewall...${NC}"
+echo -e "\n${YELLOW}4. Восстановление маршрутов AntiZapret...${NC}"
+AZ_INC="/root/antizapret/config/include-ips.txt"
+
+if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
+    echo -e " - ${CYAN}Удаление подсети $SUBNET из $AZ_INC...${NC}"
+    sed -i "\|$SUBNET|d" "$AZ_INC"
+    normalize_include_ips "$AZ_INC"
+
+    echo -e " - ${CYAN}Запуск doall.sh (обновление конфигурации AntiZapret, подождите)...${NC}"
+    export DEBIAN_FRONTEND=noninteractive
+    export SYSTEMD_PAGER=""
+    bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
+
+    echo -e " - ${GREEN}Конфигурация маршрутов успешно восстановлена!${NC}"
+else
+    normalize_include_ips "$AZ_INC"
+    echo -e " - ${GREEN}Подсеть $SUBNET отсутствует, изменения маршрутов не требуются.${NC}"
+fi
+
+echo -e "\n${YELLOW}5. Удаление правил firewall...${NC}"
 remove_iptables_rule FORWARD -o singbox-tun
 remove_iptables_rule FORWARD -i singbox-tun
 
-echo -e "\n${YELLOW}5. Удаление утилиты WARPER...${NC}"
+echo -e "\n${YELLOW}6. Удаление утилиты WARPER...${NC}"
 echo -e " - ${CYAN}Удаление системного ярлыка утилиты...${NC}"
 rm -f /usr/local/bin/warper
 rm -f /etc/knot-resolver/warper-domains.txt
