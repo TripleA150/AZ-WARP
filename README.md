@@ -174,6 +174,8 @@ warper
 
 > В некоторых случаях после применения изменений клиенту нужно переподключиться к VPN.
 
+домены от сервисов Google https://github.com/v2fly/domain-list-community/blob/master/data%2Fgoogle-deepmind
+
 ---
 
 ## ✅ Быстрая проверка после установки
