@@ -133,11 +133,50 @@ remove_port_rules() {
         iptables -D INPUT -p udp --dport "$port" -j ACCEPT
 }
 
+is_public_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    local o1 o2 o3 o4
+    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+    (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
+    (( o1 == 10 )) && return 1
+    (( o1 == 127 )) && return 1
+    (( o1 == 169 && o2 == 254 )) && return 1
+    (( o1 == 172 && o2 >= 16 && o2 <= 31 )) && return 1
+    (( o1 == 192 && o2 == 168 )) && return 1
+    (( o1 == 100 && o2 >= 64 && o2 <= 127 )) && return 1
+    (( o1 == 198 && (o2 == 18 || o2 == 19) )) && return 1
+    (( o1 >= 224 )) && return 1
+    return 0
+}
+
+get_local_public_ipv4() {
+    local ip candidate
+
+    # Основной способ: маршрут к 1.1.1.1
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{
+        for (i=1; i<=NF; i++) if ($i == "src") { print $(i+1); exit }
+    }')
+    if [ -n "$ip" ] && is_public_ipv4 "$ip"; then
+        echo "$ip"
+        return 0
+    fi
+
+    # Fallback: перебираем все global IPv4
+    while IFS= read -r candidate; do
+        if is_public_ipv4 "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u)
+
+    return 1
+}
+
 find_warp_keys() {
     local address="" private_key=""
     local wgcf_dir="$SLAVE_DIR/wgcf"
 
-    # Приоритет 1: /etc/wireguard/warp.conf
     if [ -f "/etc/wireguard/warp.conf" ]; then
         private_key=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         address=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
@@ -150,7 +189,6 @@ find_warp_keys() {
         fi
     fi
 
-    # Приоритет 2: Локальный wgcf-profile
     if [ -f "$wgcf_dir/wgcf-profile.conf" ]; then
         address=$(grep -m 1 '^Address = ' "$wgcf_dir/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         private_key=$(grep -m 1 '^PrivateKey = ' "$wgcf_dir/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
@@ -162,7 +200,6 @@ find_warp_keys() {
         fi
     fi
 
-    # Приоритет 3: /root/wgcf-profile.conf
     if [ -f "/root/wgcf-profile.conf" ]; then
         address=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         private_key=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
@@ -333,7 +370,6 @@ while true; do
                     echo -e "${RED}Ключ не может быть пустым!${NC}"
                     continue
                 fi
-                # Базовая валидация base64
                 if ! echo "$SS_PASSWORD" | base64 -d >/dev/null 2>&1; then
                     echo -e "${YELLOW}Предупреждение: ключ не похож на base64. Продолжить? (Y/n)${NC}"
                     read -r -p "> " b64_confirm < /dev/tty
@@ -354,6 +390,7 @@ done
 
 WARP_ADDRESS=""
 WARP_PRIVATE_KEY=""
+WARP_SOURCE=""
 
 if [ "$SLAVE_MODE" = "warp" ]; then
     echo -e "\n${YELLOW}[1/7] Получение ключей WARP...${NC}"
@@ -428,7 +465,6 @@ fi
 
 chmod 600 "$SINGBOX_SLAVE_CONF"
 
-# Валидация конфига
 if ! sing-box check -c "$SINGBOX_SLAVE_CONF" >/dev/null 2>&1; then
     echo -e "${RED}Ошибка: конфигурация sing-box невалидна!${NC}"
     echo -e "${YELLOW}Проверьте: sing-box check -c $SINGBOX_SLAVE_CONF${NC}"
@@ -452,7 +488,6 @@ echo -e " - ${GREEN}Настройки сохранены в $SLAVE_CONF${NC}"
 echo -e "\n${YELLOW}[5/7] Настройка systemd...${NC}"
 
 download_file "$REPO_URL/sing-box-slave.service" "/etc/systemd/system/${SERVICE_NAME}.service" "служба ${SERVICE_NAME}" || {
-    # Fallback: создаём вручную если загрузка не удалась
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" << 'SVCEOF'
 [Unit]
 Description=sing-box slave service (warperslave)
@@ -475,7 +510,6 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
 systemctl restart "$SERVICE_NAME"
 
-# Ждём запуска
 sleep 3
 if ! systemctl is-active --quiet "$SERVICE_NAME"; then
     echo -e "${RED}Ошибка: $SERVICE_NAME не запустился!${NC}"
@@ -491,14 +525,11 @@ echo -e "\n${YELLOW}[6/7] Настройка firewall...${NC}"
 ensure_port_open "$SLAVE_PORT"
 echo -e " - ${GREEN}Порт $SLAVE_PORT открыт (TCP+UDP).${NC}"
 
-# Проверяем доступность порта снаружи (информативно)
 echo -e " - ${CYAN}Проверка доступности порта...${NC}"
-if command -v ss >/dev/null 2>&1; then
-    if ss -tlnp 2>/dev/null | grep -q ":${SLAVE_PORT} "; then
-        echo -e " - ${GREEN}Порт $SLAVE_PORT слушается.${NC}"
-    else
-        echo -e " - ${YELLOW}Порт $SLAVE_PORT не обнаружен в списке слушающих (может быть UDP).${NC}"
-    fi
+if ss -tlnp 2>/dev/null | grep -q ":${SLAVE_PORT} "; then
+    echo -e " - ${GREEN}Порт $SLAVE_PORT слушается.${NC}"
+else
+    echo -e " - ${YELLOW}Порт $SLAVE_PORT не обнаружен в списке слушающих (может быть UDP).${NC}"
 fi
 
 # ===== Установка утилиты управления =====
@@ -509,16 +540,24 @@ download_file "$REPO_URL/uninstall-slave.sh" "$SLAVE_DIR/uninstall-slave.sh" "д
 chmod +x "$SLAVE_DIR/warperslave.sh" "$SLAVE_DIR/uninstall-slave.sh"
 ln -sf "$SLAVE_DIR/warperslave.sh" /usr/local/bin/warperslave
 
-# Определяем внешний IP
-EXTERNAL_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "<IP этого сервера>")
+# ===== Определяем публичный IPv4 локально =====
+
+EXTERNAL_IP=$(get_local_public_ipv4 || true)
+[ -z "$EXTERNAL_IP" ] && EXTERNAL_IP="<IPv4 не обнаружен>"
+
+if [ "$EXTERNAL_IP" = "<IPv4 не обнаружен>" ]; then
+    echo -e "${YELLOW}⚠️  Публичный IPv4 локально не обнаружен.${NC}"
+    echo -e "${YELLOW}WARPER/WARPERSLAVE работают в IPv4-сценарии.${NC}"
+    echo -e "${YELLOW}Если сервер за NAT или без белого IPv4 — подключение может не работать.${NC}"
+fi
 
 echo -e "\n${GREEN}================================================${NC}"
 echo -e " 🎉 WARPERSLAVE УСПЕШНО УСТАНОВЛЕН!"
 echo -e "${GREEN}================================================${NC}"
 echo -e ""
-echo -e " ${CYAN}Режим:${NC}     ${YELLOW}${SLAVE_MODE}${NC}"
-echo -e " ${CYAN}Порт:${NC}      ${YELLOW}${SLAVE_PORT}${NC}"
-echo -e " ${CYAN}Ключ SS:${NC}   ${YELLOW}${SS_PASSWORD}${NC}"
+echo -e " ${CYAN}Режим:${NC}      ${YELLOW}${SLAVE_MODE}${NC}"
+echo -e " ${CYAN}Порт:${NC}       ${YELLOW}${SLAVE_PORT}${NC}"
+echo -e " ${CYAN}Ключ SS:${NC}    ${YELLOW}${SS_PASSWORD}${NC}"
 echo -e " ${CYAN}Внешний IP:${NC} ${YELLOW}${EXTERNAL_IP}${NC}"
 echo -e ""
 echo -e "${CYAN}================================================${NC}"
@@ -533,8 +572,8 @@ echo -e "     - Порт:  ${YELLOW}${SLAVE_PORT}${NC}"
 echo -e "     - Ключ:  ${YELLOW}${SS_PASSWORD}${NC}"
 echo -e "${CYAN}================================================${NC}"
 echo -e ""
-echo -e " Управление:   ${GREEN}warperslave${NC}"
-echo -e " Статус:        ${GREEN}warperslave status${NC}"
-echo -e " Логи:          ${GREEN}journalctl -u $SERVICE_NAME -f${NC}"
-echo -e " Удаление:      ${GREEN}warperslave uninstall${NC}"
-echo -e "                ${GREEN}curl -fsSL $REPO_URL/uninstall-slave.sh | bash${NC}"
+echo -e " Управление:  ${GREEN}warperslave${NC}"
+echo -e " Статус:      ${GREEN}warperslave status${NC}"
+echo -e " Логи:        ${GREEN}journalctl -u $SERVICE_NAME -f${NC}"
+echo -e " Удаление:    ${GREEN}warperslave uninstall${NC}"
+echo -e "              ${GREEN}curl -fsSL $REPO_URL/uninstall-slave.sh | bash${NC}"
