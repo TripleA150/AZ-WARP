@@ -75,7 +75,6 @@ check_port_available() {
     local current_pid
     current_pid=$(systemctl show -p MainPID "$SERVICE_NAME" 2>/dev/null | cut -d= -f2)
     if [ -n "$current_pid" ] && [ "$current_pid" != "0" ]; then
-        # Исключаем порты занятые нашим же сервисом
         if ss -tlnp 2>/dev/null | grep ":${port} " | grep -v "pid=${current_pid}" | grep -q .; then
             return 1
         fi
@@ -106,6 +105,44 @@ remove_port_rules() {
 validate_singbox_config() {
     if ! command -v sing-box >/dev/null 2>&1; then return 1; fi
     sing-box check -c "$SINGBOX_SLAVE_CONF" >/dev/null 2>&1
+}
+
+is_public_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    local o1 o2 o3 o4
+    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+    (( o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255 )) || return 1
+    (( o1 == 10 )) && return 1
+    (( o1 == 127 )) && return 1
+    (( o1 == 169 && o2 == 254 )) && return 1
+    (( o1 == 172 && o2 >= 16 && o2 <= 31 )) && return 1
+    (( o1 == 192 && o2 == 168 )) && return 1
+    (( o1 == 100 && o2 >= 64 && o2 <= 127 )) && return 1
+    (( o1 == 198 && (o2 == 18 || o2 == 19) )) && return 1
+    (( o1 >= 224 )) && return 1
+    return 0
+}
+
+get_local_public_ipv4() {
+    local ip candidate
+
+    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{
+        for (i=1; i<=NF; i++) if ($i == "src") { print $(i+1); exit }
+    }')
+    if [ -n "$ip" ] && is_public_ipv4 "$ip"; then
+        echo "$ip"
+        return 0
+    fi
+
+    while IFS= read -r candidate; do
+        if is_public_ipv4 "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u)
+
+    return 1
 }
 
 find_warp_keys() {
@@ -153,15 +190,15 @@ status_cmd() {
     if systemctl is-active --quiet "$SERVICE_NAME"; then sb_run="running"; else sb_run="stopped"; fi
     if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then sb_en="enabled"; else sb_en="disabled"; fi
     local ext_ip
-    ext_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "n/a")
+    ext_ip=$(get_local_public_ipv4 || echo "n/a")
 
     echo "=== WARPERSLAVE STATUS ==="
-    echo "Mode:       $SLAVE_MODE"
-    echo "Port:       $SLAVE_PORT"
-    echo "Service:    $sb_run"
-    echo "Autostart:  $sb_en"
-    echo "SS key:     ${SS_PASSWORD:0:8}..."
-    echo "External IP: $ext_ip"
+    echo "Mode:        $SLAVE_MODE"
+    echo "Port:        $SLAVE_PORT"
+    echo "Service:     $sb_run"
+    echo "Autostart:   $sb_en"
+    echo "SS key:      ${SS_PASSWORD:0:8}..."
+    echo "Public IPv4: $ext_ip"
 }
 
 switch_mode() {
@@ -174,7 +211,6 @@ switch_mode() {
         new_mode="warp"
         echo -e "${YELLOW}Переключение на режим WARP...${NC}"
 
-        # Получаем WARP-ключи
         local warp_address="" warp_private_key=""
         if existing_keys=$(find_warp_keys); then
             warp_address=$(echo "$existing_keys" | sed -n '1p')
@@ -262,7 +298,6 @@ DIRECTEOF
 
     chmod 600 "$SINGBOX_SLAVE_CONF"
 
-    # Валидация
     if ! validate_singbox_config; then
         echo -e "${RED}Ошибка валидации конфига! Откат...${NC}"
         cp -a "$backup" "$SINGBOX_SLAVE_CONF"
@@ -271,15 +306,14 @@ DIRECTEOF
         return 1
     fi
 
-    # Обновляем конфиг
     SLAVE_MODE="$new_mode"
     save_config
 
-    # Перезапуск
     systemctl restart "$SERVICE_NAME"
     sleep 2
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         echo -e "${GREEN}Режим переключен на: $new_mode${NC}"
+        rm -f "$backup"
     else
         echo -e "${RED}Ошибка перезапуска! Откат...${NC}"
         cp -a "$backup" "$SINGBOX_SLAVE_CONF"
@@ -290,7 +324,6 @@ DIRECTEOF
         rm -f "$backup"
         return 1
     fi
-    rm -f "$backup"
 }
 
 change_port() {
@@ -321,7 +354,6 @@ change_port() {
         return 1
     fi
 
-    # Обновляем конфиг
     local backup
     backup=$(mktemp /tmp/slave_config_backup.XXXXXX)
     cp -a "$SINGBOX_SLAVE_CONF" "$backup"
@@ -340,7 +372,6 @@ change_port() {
         sed -i "s|\"listen_port\": $old_port|\"listen_port\": $new_port|g" "$SINGBOX_SLAVE_CONF"
     fi
 
-    # Валидация
     if ! validate_singbox_config; then
         echo -e "${RED}Ошибка валидации! Откат...${NC}"
         cp -a "$backup" "$SINGBOX_SLAVE_CONF"
@@ -349,19 +380,17 @@ change_port() {
         return 1
     fi
 
-    # Обновляем firewall
     remove_port_rules "$old_port" 2>/dev/null || true
     ensure_port_open "$new_port"
 
-    # Сохраняем
     SLAVE_PORT="$new_port"
     save_config
 
-    # Перезапуск
     systemctl restart "$SERVICE_NAME"
     sleep 2
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         echo -e "${GREEN}Порт изменён: $old_port → $new_port${NC}"
+        rm -f "$backup"
     else
         echo -e "${RED}Ошибка перезапуска! Откат...${NC}"
         cp -a "$backup" "$SINGBOX_SLAVE_CONF"
@@ -371,8 +400,8 @@ change_port() {
         SLAVE_PORT="$old_port"
         save_config
         systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
+        rm -f "$backup"
     fi
-    rm -f "$backup"
 }
 
 change_key() {
@@ -399,7 +428,6 @@ change_key() {
         *) echo -e "${RED}Неверный выбор.${NC}"; return 1 ;;
     esac
 
-    # Обновляем конфиг
     local backup
     backup=$(mktemp /tmp/slave_config_backup.XXXXXX)
     cp -a "$SINGBOX_SLAVE_CONF" "$backup"
@@ -415,7 +443,6 @@ change_key() {
         mv "$tmp" "$SINGBOX_SLAVE_CONF"
         chmod 600 "$SINGBOX_SLAVE_CONF"
     else
-        # Fallback: sed
         local old_escaped new_escaped
         old_escaped=$(printf '%s\n' "$SS_PASSWORD" | sed 's/[[\.*^$()+?{|\\]/\\&/g')
         new_escaped=$(printf '%s\n' "$new_key" | sed 's/[&/\]/\\&/g')
@@ -445,14 +472,15 @@ change_key() {
         echo -e "${RED}   WARPER-сервере! (warper → Настройки →${NC}"
         echo -e "${RED}   Режим маршрутизации → Slave)${NC}"
         echo -e "${RED}================================================${NC}"
+        rm -f "$backup"
     else
         echo -e "${RED}Ошибка перезапуска! Откат...${NC}"
         cp -a "$backup" "$SINGBOX_SLAVE_CONF"
         chmod 600 "$SINGBOX_SLAVE_CONF"
         SS_PASSWORD=$(load_config_value "SS_PASSWORD")
         systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
+        rm -f "$backup"
     fi
-    rm -f "$backup"
 }
 
 uninstall_cmd() {
@@ -479,6 +507,7 @@ doctor_cmd() {
     echo -e "      🩺 ${YELLOW}WARPERSLAVE DOCTOR${NC}"
     echo -e "${CYAN}==========================================${NC}"
     local failed=0
+
     check_item() {
         local label="$1" cmd="$2"
         if eval "$cmd" >/dev/null 2>&1; then
@@ -488,6 +517,7 @@ doctor_cmd() {
             failed=1
         fi
     }
+
     check_item "Конфигурация slave существует" "[ -f '$SLAVE_CONF' ]"
     check_item "Конфиг sing-box-slave существует" "[ -f '$SINGBOX_SLAVE_CONF' ]"
     check_item "Конфиг sing-box-slave валиден" "validate_singbox_config"
@@ -508,6 +538,14 @@ doctor_cmd() {
         fi
     fi
 
+    local pub_ip
+    pub_ip=$(get_local_public_ipv4 || echo "")
+    if [ -n "$pub_ip" ]; then
+        echo -e " ${GREEN}✔${NC} Публичный IPv4: $pub_ip"
+    else
+        echo -e " ${YELLOW}!${NC} Публичный IPv4 не обнаружен локально"
+    fi
+
     echo -e "${CYAN}------------------------------------------${NC}"
     if [ "$failed" -eq 0 ]; then
         echo -e "${GREEN}Проблем не обнаружено.${NC}"
@@ -521,7 +559,7 @@ doctor_cmd() {
 show_menu() {
     load_config
     clear
-    local sb_status mode_display
+    local sb_status mode_display pub_ip
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         sb_status="${GREEN}🟢 запущен${NC}"
     else
@@ -532,6 +570,7 @@ show_menu() {
     else
         mode_display="${GREEN}Direct${NC}"
     fi
+    pub_ip=$(get_local_public_ipv4 || echo "n/a")
 
     echo -e "${CYAN}================================================${NC}"
     echo -e "    🔧 ${YELLOW}WARPERSLAVE — Панель управления${NC} 🔧"
@@ -541,6 +580,7 @@ show_menu() {
     echo -e " 🔀 ${CYAN}Режим:${NC}    $mode_display"
     echo -e " 🔌 ${CYAN}Порт:${NC}     ${YELLOW}${SLAVE_PORT}${NC}"
     echo -e " 🔑 ${CYAN}Ключ:${NC}     ${YELLOW}${SS_PASSWORD:0:8}...${NC}"
+    echo -e " 🌐 ${CYAN}IP:${NC}       ${YELLOW}${pub_ip}${NC}"
     echo -e ""
     echo -e "${CYAN}------------------------------------------------${NC}"
     echo -e " ${GREEN}1.${NC} 🔀 Переключить режим (Direct ↔ WARP)"
