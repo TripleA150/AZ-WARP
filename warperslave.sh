@@ -189,10 +189,16 @@ get_remote_version() {
     local now
     now=$(date +%s)
     if (( now - REMOTE_VER_TIME > 300 )) || [ -z "$REMOTE_VER_CACHE" ]; then
-        REMOTE_VER_CACHE=$(curl -s --max-time 3 "$REPO_URL/versionslave?t=$now" | tr -d '\r\n')
+        local fetched
+        fetched=$(curl -4 -sf --max-time 3 "$REPO_URL/versionslave" | tr -d '\r\n')
+        if [[ "$fetched" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            REMOTE_VER_CACHE="$fetched"
+        else
+            REMOTE_VER_CACHE="$LOCAL_VER"
+        fi
         REMOTE_VER_TIME=$now
     fi
-    echo "${REMOTE_VER_CACHE:-$LOCAL_VER}"
+    echo "$REMOTE_VER_CACHE"
 }
 
 download_file_safe() {
