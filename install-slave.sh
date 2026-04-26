@@ -153,7 +153,6 @@ is_public_ipv4() {
 get_local_public_ipv4() {
     local ip candidate
 
-    # Основной способ: маршрут к 1.1.1.1
     ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{
         for (i=1; i<=NF; i++) if ($i == "src") { print $(i+1); exit }
     }')
@@ -162,7 +161,6 @@ get_local_public_ipv4() {
         return 0
     fi
 
-    # Fallback: перебираем все global IPv4
     while IFS= read -r candidate; do
         if is_public_ipv4 "$candidate"; then
             echo "$candidate"
@@ -537,6 +535,7 @@ fi
 echo -e "\n${YELLOW}[7/7] Установка утилиты управления...${NC}"
 download_file "$REPO_URL/warperslave.sh" "$SLAVE_DIR/warperslave.sh" "утилита warperslave" || exit 1
 download_file "$REPO_URL/uninstall-slave.sh" "$SLAVE_DIR/uninstall-slave.sh" "деинсталлятор" || exit 1
+download_file "$REPO_URL/versionslave" "$SLAVE_DIR/versionslave" "файл версии" || exit 1
 chmod +x "$SLAVE_DIR/warperslave.sh" "$SLAVE_DIR/uninstall-slave.sh"
 ln -sf "$SLAVE_DIR/warperslave.sh" /usr/local/bin/warperslave
 
@@ -551,8 +550,10 @@ if [ "$EXTERNAL_IP" = "<IPv4 не обнаружен>" ]; then
     echo -e "${YELLOW}Если сервер за NAT или без белого IPv4 — подключение может не работать.${NC}"
 fi
 
+LOCAL_VER=$(cat "$SLAVE_DIR/versionslave" 2>/dev/null | tr -d '\r\n' || echo "0.0.0")
+
 echo -e "\n${GREEN}================================================${NC}"
-echo -e " 🎉 WARPERSLAVE УСПЕШНО УСТАНОВЛЕН!"
+echo -e " 🎉 WARPERSLAVE v${LOCAL_VER} УСПЕШНО УСТАНОВЛЕН!"
 echo -e "${GREEN}================================================${NC}"
 echo -e ""
 echo -e " ${CYAN}Режим:${NC}      ${YELLOW}${SLAVE_MODE}${NC}"
