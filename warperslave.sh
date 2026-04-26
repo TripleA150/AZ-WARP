@@ -6,7 +6,7 @@ SLAVE_DIR="/root/warperslave"
 SLAVE_CONF="$SLAVE_DIR/slave.conf"
 SINGBOX_SLAVE_CONF="/etc/sing-box-slave/config.json"
 SERVICE_NAME="sing-box-slave"
-REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/1.2.0pre"
+REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/main"
 LOCAL_VER=$(cat "$SLAVE_DIR/versionslave" 2>/dev/null | tr -d '\r\n' || echo "0.0.0")
 
 RED='\033[0;31m'
@@ -33,8 +33,6 @@ release_lock() {
 
 trap 'release_lock' EXIT
 acquire_lock
-
-# ===== Загрузка конфигурации =====
 
 load_config_value() {
     local key="$1"
@@ -65,8 +63,6 @@ save_config() {
     } > "$SLAVE_CONF"
     chmod 600 "$SLAVE_CONF"
 }
-
-# ===== Утилиты =====
 
 validate_port() {
     local port="$1"
@@ -185,8 +181,6 @@ find_warp_keys() {
     return 1
 }
 
-# ===== Версионирование и обновление =====
-
 version_gt() {
     [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1" ]
 }
@@ -230,7 +224,6 @@ update_warperslave() {
     chmod +x "$SLAVE_DIR/warperslave.sh" "$SLAVE_DIR/uninstall-slave.sh"
     systemctl daemon-reload
 
-    # Перезапуск службы если она работает
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         echo -e "${CYAN}Перезапуск $SERVICE_NAME...${NC}"
         systemctl restart "$SERVICE_NAME"
@@ -249,8 +242,6 @@ update_warperslave() {
     read -r -e -p "Нажмите Enter для перезапуска warperslave..."
     exec /usr/local/bin/warperslave
 }
-
-# ===== Команды =====
 
 status_cmd() {
     load_config
@@ -293,7 +284,21 @@ switch_mode() {
 
         cat > "$SINGBOX_SLAVE_CONF" << WARPEOF
 {
-  "log": { "level": "info" },
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "warp-dns",
+        "type": "udp",
+        "server": "1.1.1.1",
+        "detour": "warp"
+      }
+    ],
+    "strategy": "ipv4_only",
+    "independent_cache": true
+  },
   "inbounds": [
     {
       "type": "shadowsocks",
@@ -325,12 +330,19 @@ switch_mode() {
     }
   ],
   "outbounds": [
-    { "type": "direct", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
   "route": {
     "rules": [
-      { "inbound": "ss-in", "outbound": "warp" }
+      {
+        "inbound": "ss-in",
+        "outbound": "warp"
+      }
     ],
+    "default_domain_resolver": "warp-dns",
     "final": "direct"
   }
 }
@@ -341,7 +353,20 @@ WARPEOF
 
         cat > "$SINGBOX_SLAVE_CONF" << DIRECTEOF
 {
-  "log": { "level": "info" },
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "direct-dns",
+        "type": "udp",
+        "server": "1.1.1.1"
+      }
+    ],
+    "strategy": "ipv4_only",
+    "independent_cache": true
+  },
   "inbounds": [
     {
       "type": "shadowsocks",
@@ -353,12 +378,19 @@ WARPEOF
     }
   ],
   "outbounds": [
-    { "type": "direct", "tag": "direct" }
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
   "route": {
     "rules": [
-      { "inbound": "ss-in", "outbound": "direct" }
+      {
+        "inbound": "ss-in",
+        "outbound": "direct"
+      }
     ],
+    "default_domain_resolver": "direct-dns",
     "final": "direct"
   }
 }
@@ -625,8 +657,6 @@ doctor_cmd() {
     fi
 }
 
-# ===== Главное меню =====
-
 MENU_UPDATE_AVAILABLE=false
 MENU_REMOTE_VER="$LOCAL_VER"
 
@@ -691,8 +721,6 @@ show_menu() {
     echo -e "${CYAN}================================================${NC}"
 }
 
-# ===== CLI-обработка =====
-
 case "${1:-}" in
     status) load_config; status_cmd; exit $? ;;
     switch) switch_mode; exit $? ;;
@@ -718,8 +746,6 @@ case "${1:-}" in
         exit 0
         ;;
 esac
-
-# ===== Интерактивное меню =====
 
 while true; do
     show_menu
@@ -750,7 +776,6 @@ while true; do
                 echo -e "\n${CYAN}Проверка обновлений...${NC}"
                 REMOTE_VER_CACHE=""
                 REMOTE_VER_TIME=0
-                local rv
                 rv=$(get_remote_version)
                 if version_gt "$rv" "$LOCAL_VER"; then
                     echo -e "${GREEN}Доступно обновление: $rv${NC}"
