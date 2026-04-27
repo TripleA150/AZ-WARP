@@ -76,27 +76,28 @@ AZ-WARP/
 
 ├── templates/
 
-│   ├── config.json.template
+   ├── config.json.template
 
-│   ├── config-slave-master.json.template
+   ├── config-slave-master.json.template
 
-│   ├── config-slave-direct.json.template
+   ├── config-slave-direct.json.template
 
-│   ├── config-slave-warp.json.template
+   ├── config-slave-warp.json.template
 
-│   ├── sing-box.service
+   ├── sing-box.service
 
-│   ├── sing-box-slave.service
+   ├── sing-box-slave.service
 
-│   └── warper-autopatch.service
+   └── warper-autopatch.service
 
 ├── download/
 
-│   ├── gemini.txt
+   ├── gemini.txt
 
-│   └── chatgpt.txt
+   └── chatgpt.txt
 
 └── docs/
+
     ├── architecture.md
     
     ├── manual-install.md
