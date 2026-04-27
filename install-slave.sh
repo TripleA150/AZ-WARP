@@ -446,13 +446,13 @@ echo -e "\n${YELLOW}[3/7] Создание конфигурации...${NC}"
 mkdir -p /etc/sing-box-slave
 
 if [ "$SLAVE_MODE" = "direct" ]; then
-    download_file "$REPO_URL/config-slave-direct.json.template" "$SLAVE_DIR/config-slave.json.template" "шаблон конфигурации (direct)" || exit 1
+    download_file "$REPO_URL/templates/config-slave-direct.json.template" "$SLAVE_DIR/config-slave.json.template" "шаблон конфигурации (direct)" || exit 1
     sed \
         -e "s|__SLAVE_PORT__|$SLAVE_PORT|g" \
         -e "s|__SLAVE_PASSWORD__|$SS_PASSWORD|g" \
         "$SLAVE_DIR/config-slave.json.template" > "$SINGBOX_SLAVE_CONF"
 else
-    download_file "$REPO_URL/config-slave-warp.json.template" "$SLAVE_DIR/config-slave.json.template" "шаблон конфигурации (warp)" || exit 1
+    download_file "$REPO_URL/templates/config-slave-warp.json.template" "$SLAVE_DIR/config-slave.json.template" "шаблон конфигурации (warp)" || exit 1
     sed \
         -e "s|__SLAVE_PORT__|$SLAVE_PORT|g" \
         -e "s|__SLAVE_PASSWORD__|$SS_PASSWORD|g" \
@@ -485,7 +485,7 @@ echo -e " - ${GREEN}Настройки сохранены в $SLAVE_CONF${NC}"
 
 echo -e "\n${YELLOW}[5/7] Настройка systemd...${NC}"
 
-download_file "$REPO_URL/sing-box-slave.service" "/etc/systemd/system/${SERVICE_NAME}.service" "служба ${SERVICE_NAME}" || {
+download_file "$REPO_URL/templates/sing-box-slave.service" "/etc/systemd/system/${SERVICE_NAME}.service" "служба ${SERVICE_NAME}" || {
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" << 'SVCEOF'
 [Unit]
 Description=sing-box slave service (warperslave)
