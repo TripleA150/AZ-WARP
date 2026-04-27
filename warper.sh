@@ -1615,6 +1615,9 @@ show_main_menu() {
     echo -e " 🔀 ${CYAN}Fake-подсеть:${NC}  ${YELLOW}$SUBNET${NC} — $AZ_STAT"
     echo -e " 🔄 ${CYAN}Автопатч DNS:${NC}  $AP_STAT"
     echo -e " 🔑 ${CYAN}WARP-ключи:${NC}    $WARP_KEYS_SRC"
+    if [ "$CURRENT_OUTBOUND_MODE" = "slave" ] && [ -n "$SLAVE_PASSWORD" ]; then
+        echo -e " 🔐 ${CYAN}SS-ключ:${NC}       ${YELLOW}${SLAVE_PASSWORD:0:8}...${NC}"
+    fi
 
     if needs_down_sh; then
         echo -e ""
@@ -1633,6 +1636,9 @@ show_main_menu() {
     echo -e " ${CYAN}7.${NC} 📄 Показать логи sing-box"
     echo -e " ${CYAN}D.${NC} 🩺 Диагностика (doctor)"
     echo -e " ${CYAN}S.${NC} 📊 Краткий статус"
+    if [ "$CURRENT_OUTBOUND_MODE" = "slave" ]; then
+        echo -e " ${CYAN}K.${NC} 🔐 Показать полный SS-ключ"
+    fi
     echo -e "${CYAN}------------------------------------------------${NC}"
 
     if systemctl is-active --quiet sing-box || grep -q "WARP-MOD-START" "$KRESD_CONF" 2>/dev/null; then
@@ -1855,6 +1861,16 @@ while true; do
             ;;
         d|D) doctor; read -r -p "Нажмите Enter..." ;;
         s|S) status_cmd; read -r -p "Нажмите Enter..." ;;
+        k|K)
+            load_slave_config
+            if [ "$CURRENT_OUTBOUND_MODE" = "slave" ] && [ -n "$SLAVE_PASSWORD" ]; then
+                echo -e "\n${CYAN}Полный ключ Shadowsocks:${NC} ${YELLOW}${SLAVE_PASSWORD}${NC}"
+                echo -e "${CYAN}Сервер:${NC} ${YELLOW}${SLAVE_SERVER}:${SLAVE_PORT}${NC}"
+            else
+                echo -e "${YELLOW}Режим Slave не активен.${NC}"
+            fi
+            read -r -p "Нажмите Enter..."
+            ;;
         u|U)
             if [ -f "$WARPER_DIR/uninstaller.sh" ]; then
                 exec bash "$WARPER_DIR/uninstaller.sh"
