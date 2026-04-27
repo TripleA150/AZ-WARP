@@ -278,6 +278,35 @@ find_warp_keys() {
     return 1
 }
 
+get_warp_source() {
+    if [ -f "/etc/wireguard/warp.conf" ]; then
+        local pk
+        pk=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        if [ -n "$pk" ]; then
+            echo "/etc/wireguard/warp.conf"
+            return 0
+        fi
+    fi
+    if [ -f "$SLAVE_DIR/wgcf/wgcf-profile.conf" ]; then
+        local pk
+        pk=$(grep -m 1 '^PrivateKey = ' "$SLAVE_DIR/wgcf/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$pk" ]; then
+            echo "$SLAVE_DIR/wgcf/wgcf-profile.conf"
+            return 0
+        fi
+    fi
+    if [ -f "/root/wgcf-profile.conf" ]; then
+        local pk
+        pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$pk" ]; then
+            echo "/root/wgcf-profile.conf"
+            return 0
+        fi
+    fi
+    echo "не найдены"
+    return 1
+}
+
 version_gt() {
     [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1" ]
 }
@@ -366,6 +395,9 @@ status_cmd() {
     local mtu_val
     mtu_val=$(get_mtu)
     [ -n "$mtu_val" ] && echo "MTU:         $mtu_val"
+    if [ "$SLAVE_MODE" = "warp" ]; then
+        echo "WARP keys:   $(get_warp_source)"
+    fi
 }
 
 switch_mode() {
@@ -388,7 +420,11 @@ switch_mode() {
             rm -f "$backup"
             return 1
         fi
-
+        
+        local warp_src
+        warp_src=$(get_warp_source)
+        echo -e " - ${GREEN}Источник WARP-ключей: ${warp_src}${NC}"
+        
         cat > "$SINGBOX_SLAVE_CONF" << WARPEOF
 {
   "log": {
@@ -747,7 +783,7 @@ doctor_cmd() {
         local has_warp=false
         if find_warp_keys >/dev/null 2>&1; then has_warp=true; fi
         if [ "$has_warp" = true ]; then
-            echo -e " ${GREEN}✔${NC} WARP-ключи доступны"
+            echo -e " ${GREEN}✔${NC} WARP-ключи доступны ($(get_warp_source))"
         else
             echo -e " ${RED}✘${NC} WARP-ключи не найдены (режим: warp)"
             failed=1
@@ -817,6 +853,11 @@ show_menu() {
     [ -z "$mtu_display" ] && mtu_display="n/a"
     echo -e " 🌐 ${CYAN}IP:${NC}       ${YELLOW}${pub_ip}${NC}"
     echo -e " ⚙️  ${CYAN}Log:${NC}      ${YELLOW}${log_level}${NC} | MTU: ${YELLOW}${mtu_display}${NC}"
+    if [ "$SLAVE_MODE" = "warp" ]; then
+        local warp_src
+        warp_src=$(get_warp_source)
+        echo -e " 🔑 ${CYAN}WARP:${NC}     ${YELLOW}${warp_src}${NC}"
+    fi
     echo -e ""
     echo -e "${CYAN}------------------------------------------------${NC}"
     echo -e " ${GREEN}1.${NC} 🔀 Переключить режим (Direct ↔ WARP)"
