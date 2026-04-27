@@ -12,7 +12,7 @@ apt-get install -y curl wget jq iptables nano
 ## Шаг 2. Установка sing-box
 
 ```bash
-curl -fsSL https://sing-box.app/install.sh | bash
+curl -fsSL https://sing-box.app/install.sh | bash -s -- --version 1.13.5
 ```
 
 ## Шаг 3. Получение ключей WARP
