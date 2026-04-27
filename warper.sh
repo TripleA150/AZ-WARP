@@ -599,6 +599,19 @@ ensure_singbox_running() {
     return 0
 }
 
+restart_singbox_full() {
+    systemctl stop sing-box >/dev/null 2>&1 || true
+    sleep 1
+    systemctl start sing-box
+    if ! ensure_singbox_running; then
+        return 1
+    fi
+    ensure_iptables_rule FORWARD -o singbox-tun
+    ensure_iptables_rule FORWARD -i singbox-tun
+    systemctl restart kresd@1 >/dev/null 2>&1 || true
+    return 0
+}
+
 ensure_iptables_rule() {
     local chain="$1" iface_flag="$2" iface_name="$3"
     iptables -C "$chain" "$iface_flag" "$iface_name" -j ACCEPT 2>/dev/null || \
@@ -1213,20 +1226,28 @@ switch_outbound_mode() {
                 sleep 1
                 return
             fi
+
             echo -e "${YELLOW}Переключение на WARP...${NC}"
+
+            if [ ! -f "$SINGBOX_TEMPLATE" ]; then
+                download_file_safe "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "config.json.template" || {
+                    echo -e "${RED}Не удалось загрузить шаблон WARP-конфига.${NC}"
+                    sleep 2
+                    return
+                }
+            fi
+
             CURRENT_OUTBOUND_MODE="warp"
             save_slave_config
-            if [ -f "$SINGBOX_TEMPLATE" ]; then
-                if rebuild_config "$SINGBOX_TEMPLATE"; then
-                    systemctl restart sing-box
-                    if ensure_singbox_running; then
-                        ensure_iptables_rule FORWARD -o singbox-tun
-                        ensure_iptables_rule FORWARD -i singbox-tun
-                        echo -e "${GREEN}Режим WARP активирован!${NC}"
-                    fi
+
+            if rebuild_config "$SINGBOX_TEMPLATE"; then
+                if restart_singbox_full; then
+                    echo -e "${GREEN}Режим WARP активирован!${NC}"
                 else
-                    echo -e "${RED}Ошибка пересборки конфига!${NC}"
+                    echo -e "${RED}Не удалось корректно перезапустить sing-box.${NC}"
                 fi
+            else
+                echo -e "${RED}Ошибка пересборки конфига!${NC}"
             fi
             sleep 2
             ;;
@@ -1317,20 +1338,19 @@ switch_outbound_mode() {
 
             echo -e "${YELLOW}Создание конфигурации...${NC}"
             if rebuild_config_slave; then
-                systemctl restart sing-box
-                if ensure_singbox_running; then
-                    ensure_iptables_rule FORWARD -o singbox-tun
-                    ensure_iptables_rule FORWARD -i singbox-tun
+                if restart_singbox_full; then
                     echo -e "${GREEN}Режим Slave активирован!${NC}"
                     echo -e "${CYAN}Трафик идёт через: $SLAVE_SERVER:$SLAVE_PORT${NC}"
+                else
+                    echo -e "${RED}Не удалось корректно перезапустить sing-box.${NC}"
                 fi
             else
                 echo -e "${RED}Ошибка! Возврат к режиму WARP.${NC}"
                 CURRENT_OUTBOUND_MODE="warp"
                 save_slave_config
                 if [ -f "$SINGBOX_TEMPLATE" ]; then
-                    rebuild_config "$SINGBOX_TEMPLATE"
-                    systemctl restart sing-box
+                    rebuild_config "$SINGBOX_TEMPLATE" >/dev/null 2>&1 || true
+                    restart_singbox_full >/dev/null 2>&1 || true
                 fi
             fi
             sleep 2
