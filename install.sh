@@ -463,7 +463,7 @@ echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IP
 echo -e " - ${CYAN}Загрузка шаблона и генерация $SINGBOX_CONF...${NC}"
 mkdir -p /etc/sing-box
 
-download_file "$REPO_URL/config.json.template" "$SINGBOX_TEMPLATE" "шаблон config.json" || exit 1
+download_file "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "шаблон config.json" || exit 1
 
 sed \
     -e "s|__WARP_ADDRESS__|$WARP_ADDRESS|g" \
@@ -481,8 +481,8 @@ fi
 echo -e " - ${GREEN}Конфигурация sing-box создана с подсетью $SUBNET.${NC}"
 
 echo -e "\n${YELLOW}[4/8] Загрузка и настройка служб systemd...${NC}"
-download_file "$REPO_URL/sing-box.service" "/etc/systemd/system/sing-box.service" "служба sing-box.service" || exit 1
-download_file "$REPO_URL/warper-autopatch.service" "/etc/systemd/system/warper-autopatch.service" "служба warper-autopatch.service" || exit 1
+download_file "$REPO_URL/templates/sing-box.service" "/etc/systemd/system/sing-box.service" "служба sing-box.service" || exit 1
+download_file "$REPO_URL/templates/warper-autopatch.service" "/etc/systemd/system/warper-autopatch.service" "служба warper-autopatch.service" || exit 1
 systemctl daemon-reload
 
 if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
@@ -546,7 +546,7 @@ echo -e " - ${CYAN}Скачивание исполняемых файлов ут
 download_file "$REPO_URL/warper.sh" "$WARPER_DIR/warper.sh" "утилита warper.sh" || exit 1
 download_file "$REPO_URL/uninstaller.sh" "$WARPER_DIR/uninstaller.sh" "деинсталлятор uninstaller.sh" || exit 1
 download_file "$REPO_URL/version" "$WARPER_DIR/version" "файл версии" || exit 1
-download_file "$REPO_URL/config-slave-master.json.template" "$WARPER_DIR/config-slave-master.json.template" "шаблон slave-master" || exit 1
+download_file "$REPO_URL/templates/config-slave-master.json.template" "$WARPER_DIR/config-slave-master.json.template" "шаблон slave-master" || exit 1
 
 chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
 ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper
