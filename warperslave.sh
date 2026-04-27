@@ -101,6 +101,103 @@ remove_port_rules() {
         iptables -D INPUT -p udp --dport "$port" -j ACCEPT
 }
 
+get_log_level() {
+    if [ -f "$SINGBOX_SLAVE_CONF" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.log.level // "info"' "$SINGBOX_SLAVE_CONF" 2>/dev/null || echo "info"
+    else
+        echo "info"
+    fi
+}
+
+set_log_level() {
+    local new_level="$1"
+    case "$new_level" in
+        debug|info|warn|error) ;;
+        *) echo -e "${RED}Некорректный log level: $new_level${NC}"; return 1 ;;
+    esac
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}jq не найден.${NC}"; return 1
+    fi
+    local backup tmp old_level
+    backup=$(mktemp /tmp/slave_config_backup.XXXXXX)
+    tmp=$(mktemp)
+    cp -a "$SINGBOX_SLAVE_CONF" "$backup"
+    old_level=$(get_log_level)
+    if [ "$old_level" = "$new_level" ]; then
+        rm -f "$backup" "$tmp"
+        echo -e "${YELLOW}log level уже установлен: $new_level${NC}"
+        return 0
+    fi
+    if ! jq --arg lvl "$new_level" '.log.level = $lvl' "$SINGBOX_SLAVE_CONF" > "$tmp"; then
+        rm -f "$backup" "$tmp"; return 1
+    fi
+    mv "$tmp" "$SINGBOX_SLAVE_CONF"
+    chmod 600 "$SINGBOX_SLAVE_CONF"
+    if ! validate_singbox_config; then
+        cp -a "$backup" "$SINGBOX_SLAVE_CONF"; chmod 600 "$SINGBOX_SLAVE_CONF"; rm -f "$backup"
+        echo -e "${RED}Откат выполнен.${NC}"; return 1
+    fi
+    systemctl restart "$SERVICE_NAME"
+    sleep 2
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        cp -a "$backup" "$SINGBOX_SLAVE_CONF"; chmod 600 "$SINGBOX_SLAVE_CONF"
+        systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
+        rm -f "$backup"; return 1
+    fi
+    rm -f "$backup"
+    echo -e "${GREEN}log level изменён: ${old_level} → ${new_level}${NC}"
+    return 0
+}
+
+get_mtu() {
+    if [ -f "$SINGBOX_SLAVE_CONF" ] && command -v jq >/dev/null 2>&1; then
+        jq -r '.endpoints[0].mtu // empty' "$SINGBOX_SLAVE_CONF" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
+set_mtu() {
+    local new_mtu="$1"
+    if [[ ! "$new_mtu" =~ ^[0-9]+$ ]] || (( new_mtu < 1280 || new_mtu > 1500 )); then
+        echo -e "${RED}Некорректный MTU: $new_mtu (допустимо 1280-1500)${NC}"; return 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${RED}jq не найден.${NC}"; return 1
+    fi
+    local old_mtu
+    old_mtu=$(get_mtu)
+    if [ -z "$old_mtu" ]; then
+        echo -e "${RED}MTU недоступен (режим Direct не использует endpoints).${NC}"; return 1
+    fi
+    if [ "$old_mtu" = "$new_mtu" ]; then
+        echo -e "${YELLOW}MTU уже установлен: $new_mtu${NC}"; return 0
+    fi
+    local backup tmp
+    backup=$(mktemp /tmp/slave_config_backup.XXXXXX)
+    tmp=$(mktemp)
+    cp -a "$SINGBOX_SLAVE_CONF" "$backup"
+    if ! jq --argjson mtu "$new_mtu" '.endpoints[0].mtu = $mtu' "$SINGBOX_SLAVE_CONF" > "$tmp"; then
+        rm -f "$backup" "$tmp"; return 1
+    fi
+    mv "$tmp" "$SINGBOX_SLAVE_CONF"
+    chmod 600 "$SINGBOX_SLAVE_CONF"
+    if ! validate_singbox_config; then
+        cp -a "$backup" "$SINGBOX_SLAVE_CONF"; chmod 600 "$SINGBOX_SLAVE_CONF"; rm -f "$backup"
+        echo -e "${RED}Откат выполнен.${NC}"; return 1
+    fi
+    systemctl restart "$SERVICE_NAME"
+    sleep 2
+    if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+        cp -a "$backup" "$SINGBOX_SLAVE_CONF"; chmod 600 "$SINGBOX_SLAVE_CONF"
+        systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
+        rm -f "$backup"; return 1
+    fi
+    rm -f "$backup"
+    echo -e "${GREEN}MTU изменён: ${old_mtu} → ${new_mtu}${NC}"
+    return 0
+}
+
 validate_singbox_config() {
     if ! command -v sing-box >/dev/null 2>&1; then return 1; fi
     sing-box check -c "$SINGBOX_SLAVE_CONF" >/dev/null 2>&1
@@ -265,6 +362,10 @@ status_cmd() {
     echo "Autostart:   $sb_en"
     echo "SS key:      ${SS_PASSWORD:0:8}..."
     echo "Public IPv4: $ext_ip"
+    echo "Log level:   $(get_log_level)"
+    local mtu_val
+    mtu_val=$(get_mtu)
+    [ -n "$mtu_val" ] && echo "MTU:         $mtu_val"
 }
 
 switch_mode() {
@@ -626,6 +727,12 @@ doctor_cmd() {
     }
 
     echo -e " ${CYAN}!${NC} Версия: $LOCAL_VER"
+    echo -e " ${CYAN}!${NC} Log level: $(get_log_level)"
+    if [ "$SLAVE_MODE" = "warp" ]; then
+        local doc_mtu
+        doc_mtu=$(get_mtu)
+        echo -e " ${CYAN}!${NC} MTU: ${doc_mtu:-n/a}"
+    fi
 
     check_item "Конфигурация slave существует" "[ -f '$SLAVE_CONF' ]"
     check_item "Конфиг sing-box-slave существует" "[ -f '$SINGBOX_SLAVE_CONF' ]"
@@ -704,7 +811,12 @@ show_menu() {
     echo -e " 🔀 ${CYAN}Режим:${NC}    $mode_display"
     echo -e " 🔌 ${CYAN}Порт:${NC}     ${YELLOW}${SLAVE_PORT}${NC}"
     echo -e " 🔑 ${CYAN}Ключ:${NC}     ${YELLOW}${SS_PASSWORD:0:8}...${NC}"
+    local log_level mtu_display
+    log_level=$(get_log_level)
+    mtu_display=$(get_mtu)
+    [ -z "$mtu_display" ] && mtu_display="n/a"
     echo -e " 🌐 ${CYAN}IP:${NC}       ${YELLOW}${pub_ip}${NC}"
+    echo -e " ⚙️  ${CYAN}Log:${NC}      ${YELLOW}${log_level}${NC} | MTU: ${YELLOW}${mtu_display}${NC}"
     echo -e ""
     echo -e "${CYAN}------------------------------------------------${NC}"
     echo -e " ${GREEN}1.${NC} 🔀 Переключить режим (Direct ↔ WARP)"
@@ -713,6 +825,10 @@ show_menu() {
     echo -e " ${CYAN}4.${NC} 👁️  Показать полный ключ"
     echo -e " ${CYAN}5.${NC} 🔄 Перезапустить службу"
     echo -e " ${CYAN}6.${NC} 📄 Показать логи"
+    echo -e " ${CYAN}8.${NC} ⚙️  Изменить log level"
+    if [ "$SLAVE_MODE" = "warp" ]; then
+    echo -e " ${CYAN}9.${NC} ⚙️  Изменить MTU"
+    fi
     echo -e " ${CYAN}D.${NC} 🩺 Диагностика"
     echo -e " ${CYAN}S.${NC} 📊 Статус"
     echo -e "${CYAN}------------------------------------------------${NC}"
@@ -791,6 +907,40 @@ while true; do
                     fi
                 else
                     echo -e "${GREEN}Версия актуальна: $LOCAL_VER${NC}"
+                    sleep 2
+                fi
+            fi
+            ;;
+        8)
+            echo -e "\n${CYAN}Доступные уровни логирования:${NC}"
+            echo -e " ${CYAN}1.${NC} debug"
+            echo -e " ${CYAN}2.${NC} info"
+            echo -e " ${CYAN}3.${NC} warn"
+            echo -e " ${CYAN}4.${NC} error"
+            echo -e " ${CYAN}0.${NC} Отмена"
+            read -r -e -p "Выбор [0-4]: " log_choice
+            case "${log_choice:-}" in
+                1) set_log_level "debug"; sleep 2 ;;
+                2) set_log_level "info"; sleep 2 ;;
+                3) set_log_level "warn"; sleep 2 ;;
+                4) set_log_level "error"; sleep 2 ;;
+                0) ;;
+                *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
+            esac
+            ;;
+        9)
+            load_config
+            if [ "$SLAVE_MODE" != "warp" ]; then
+                echo -e "${YELLOW}MTU доступен только в режиме WARP.${NC}"
+                sleep 1
+            else
+                local current_mtu
+                current_mtu=$(get_mtu)
+                echo -e "\n${CYAN}Текущий MTU: ${current_mtu:-n/a}${NC}"
+                echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
+                read -r -e -p "Введите новый MTU (или Enter для отмены): " new_mtu
+                if [ -n "$new_mtu" ]; then
+                    set_mtu "$new_mtu"
                     sleep 2
                 fi
             fi
