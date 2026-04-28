@@ -1766,6 +1766,211 @@ switch_outbound_mode() {
     esac
 }
 
+# ===== Управление WARP ключами =====
+
+manage_warp_keys() {
+    load_slave_config
+    if [ "$CURRENT_OUTBOUND_MODE" != "warp" ]; then
+        echo -e "${YELLOW}Управление WARP-ключами доступно только в режиме WARP.${NC}"
+        sleep 2
+        return
+    fi
+
+    echo -e "\n${CYAN}================================================${NC}"
+    echo -e "       ${YELLOW}Управление WARP-ключами${NC}"
+    echo -e "${CYAN}================================================${NC}"
+
+    # Показываем текущий источник
+    local current_source="неизвестно"
+    if [ -f "$WARP_SYSTEM_CONF" ]; then
+        local sys_pk
+        sys_pk=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        if [ -n "$sys_pk" ]; then
+            # Сравниваем с текущим ключом в sing-box
+            local cur_pk=""
+            if command -v jq >/dev/null 2>&1 && [ -f "$SINGBOX_CONF" ]; then
+                cur_pk=$(jq -r '.endpoints[] | select(.tag=="warp") | .private_key // empty' "$SINGBOX_CONF" 2>/dev/null || true)
+            fi
+            if [ "$sys_pk" = "$cur_pk" ]; then
+                current_source="$WARP_SYSTEM_CONF"
+            fi
+        fi
+    fi
+    if [ "$current_source" = "неизвестно" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+        local wgcf_pk
+        wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        local cur_pk=""
+        if command -v jq >/dev/null 2>&1 && [ -f "$SINGBOX_CONF" ]; then
+            cur_pk=$(jq -r '.endpoints[] | select(.tag=="warp") | .private_key // empty' "$SINGBOX_CONF" 2>/dev/null || true)
+        fi
+        if [ -n "$wgcf_pk" ] && [ "$wgcf_pk" = "$cur_pk" ]; then
+            current_source="$WGCF_DIR/wgcf-profile.conf"
+        fi
+    fi
+    if [ "$current_source" = "неизвестно" ]; then
+        current_source="конфиг sing-box"
+    fi
+
+    echo -e ""
+    echo -e " ${CYAN}Текущий источник:${NC} ${YELLOW}${current_source}${NC}"
+    echo -e ""
+
+    # Формируем список доступных источников
+    local -a sources=()
+    local -a source_labels=()
+    local idx=1
+
+    if [ -f "$WARP_SYSTEM_CONF" ]; then
+        local sys_pk sys_addr
+        sys_pk=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        sys_addr=$(grep -m 1 '^Address' "$WARP_SYSTEM_CONF" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        if [ -n "$sys_pk" ]; then
+            sources+=("system")
+            source_labels+=("$WARP_SYSTEM_CONF (${sys_addr:-без адреса}) — рекомендуется")
+            echo -e " ${GREEN}${idx}.${NC} ${source_labels[$((idx-1))]}"
+            ((idx++))
+        fi
+    fi
+
+    if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+        local wgcf_pk wgcf_addr
+        wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        wgcf_addr=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$wgcf_pk" ]; then
+            sources+=("wgcf")
+            source_labels+=("$WGCF_DIR/wgcf-profile.conf ($wgcf_addr)")
+            echo -e " ${CYAN}${idx}.${NC} ${source_labels[$((idx-1))]}"
+            ((idx++))
+        fi
+    fi
+
+    if [ -f "/root/wgcf-profile.conf" ]; then
+        local root_pk root_addr
+        root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        root_addr=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$root_pk" ]; then
+            sources+=("root")
+            source_labels+=("/root/wgcf-profile.conf ($root_addr)")
+            echo -e " ${CYAN}${idx}.${NC} ${source_labels[$((idx-1))]}"
+            ((idx++))
+        fi
+    fi
+
+    sources+=("generate")
+    source_labels+=("Сгенерировать новый ключ WARP")
+    echo -e " ${YELLOW}${idx}.${NC} ${source_labels[$((idx-1))]}"
+    ((idx++))
+
+    echo -e " ${CYAN}0.${NC} Отмена"
+    echo -e ""
+
+    read -r -p "Выбор: " key_choice
+
+    if [ "$key_choice" = "0" ] || [ -z "$key_choice" ]; then
+        return
+    fi
+
+    if ! [[ "$key_choice" =~ ^[0-9]+$ ]] || (( key_choice < 1 || key_choice > ${#sources[@]} )); then
+        echo -e "${RED}Неверный выбор.${NC}"
+        sleep 1
+        return
+    fi
+
+    local selected="${sources[$((key_choice-1))]}"
+    local new_address="" new_private_key=""
+
+    case "$selected" in
+        system)
+            new_private_key=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            new_address=$(grep -m 1 '^Address' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            [ -z "$new_address" ] && new_address="172.16.0.2/32"
+            [[ ! "$new_address" =~ / ]] && new_address="${new_address}/32"
+            echo -e "${CYAN}Используем ключи из $WARP_SYSTEM_CONF${NC}"
+            ;;
+        wgcf)
+            new_private_key=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            new_address=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            echo -e "${CYAN}Используем ключи из $WGCF_DIR/wgcf-profile.conf${NC}"
+            ;;
+        root)
+            new_private_key=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            new_address=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            echo -e "${CYAN}Используем ключи из /root/wgcf-profile.conf${NC}"
+            ;;
+        generate)
+            echo -e "${YELLOW}Генерация нового ключа WARP...${NC}"
+            mkdir -p "$WGCF_DIR"
+            cd "$WGCF_DIR" || { echo -e "${RED}Ошибка перехода в $WGCF_DIR${NC}"; return 1; }
+
+            if [ ! -f "/usr/local/bin/wgcf" ]; then
+                local sys_arch
+                sys_arch=$(uname -m)
+                case "$sys_arch" in
+                    x86_64)  sys_arch="amd64" ;;
+                    aarch64) sys_arch="arm64" ;;
+                    armv7l)  sys_arch="armv7" ;;
+                    *) echo -e "${RED}Неподдерживаемая архитектура.${NC}"; return 1 ;;
+                esac
+                echo -e " - ${CYAN}Скачивание wgcf...${NC}"
+                if ! wget -qO wgcf "https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_${sys_arch}"; then
+                    echo -e "${RED}Ошибка загрузки wgcf!${NC}"
+                    return 1
+                fi
+                chmod +x wgcf
+                mv wgcf /usr/local/bin/wgcf
+            fi
+
+            echo -e " - ${CYAN}Регистрация WARP...${NC}"
+            /usr/local/bin/wgcf register --accept-tos > /dev/null 2>&1
+            /usr/local/bin/wgcf generate > /dev/null 2>&1
+
+            if [ ! -f "wgcf-profile.conf" ]; then
+                echo -e "${RED}Ошибка: wgcf-profile.conf не создан!${NC}"
+                echo -e "${YELLOW}Cloudflare мог заблокировать регистрацию с этого IP.${NC}"
+                return 1
+            fi
+
+            chmod 600 wgcf-profile.conf wgcf-account.toml 2>/dev/null || true
+            new_private_key=$(grep -m 1 '^PrivateKey = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
+            new_address=$(grep -m 1 '^Address = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
+            echo -e "${GREEN}Новый ключ WARP сгенерирован!${NC}"
+            ;;
+    esac
+
+    if [ -z "$new_private_key" ] || [ -z "$new_address" ]; then
+        echo -e "${RED}Не удалось получить ключи.${NC}"
+        sleep 2
+        return
+    fi
+
+    echo -e "${YELLOW}Пересборка конфигурации...${NC}"
+
+    # Подставляем ключи напрямую в шаблон
+    if [ ! -f "$SINGBOX_TEMPLATE" ]; then
+        download_file_safe "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "config.json.template" || return 1
+    fi
+
+    sed \
+        -e "s|__WARP_ADDRESS__|$new_address|g" \
+        -e "s|__WARP_PRIVATE_KEY__|$new_private_key|g" \
+        -e "s|__SUBNET__|$SUBNET|g" \
+        -e "s|__TUN_IP__|$TUN_IP|g" \
+        "$SINGBOX_TEMPLATE" > "$SINGBOX_CONF"
+    chmod 600 "$SINGBOX_CONF"
+
+    if ! validate_singbox_config; then
+        echo -e "${RED}Ошибка валидации! Откат...${NC}"
+        return 1
+    fi
+
+    if restart_singbox_full; then
+        echo -e "${GREEN}WARP-ключи успешно обновлены!${NC}"
+    else
+        echo -e "${RED}Ошибка перезапуска sing-box.${NC}"
+    fi
+    sleep 2
+}
+
 # ===== Обновление =====
 
 update_warper() {
@@ -1832,9 +2037,12 @@ settings_menu() {
         echo -e " ${CYAN}5.${NC} Изменить log level sing-box:   [$LOG_LEVEL]"
         echo -e " ${CYAN}6.${NC} Изменить MTU sing-box:         [$MTU]"
         echo -e " ${CYAN}7.${NC} Режим маршрутизации:           [$MODE_STAT]"
+        if [ "$CURRENT_OUTBOUND_MODE" = "warp" ]; then
+            echo -e " ${CYAN}8.${NC} Управление WARP-ключами"
+        fi        
         echo -e " ${CYAN}0.${NC} Назад в главное меню"
         echo -e "${CYAN}==========================================${NC}"
-        read -r -e -p "Выбор [0-7]: " set_choice
+        read -r -e -p "Выбор [0-8]: " set_choice
         case "${set_choice:-}" in
             1)
                 if systemctl is-enabled --quiet warper-autopatch 2>/dev/null; then
@@ -1922,6 +2130,7 @@ settings_menu() {
                 if [ -n "$new_mtu" ]; then set_mtu "$new_mtu"; sleep 2; fi
                 ;;
             7) switch_outbound_mode ;;
+            8) manage_warp_keys ;;        
             0) return ;;
             *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
         esac
@@ -2027,13 +2236,33 @@ show_main_menu() {
         else
             WARP_KEYS_SRC="${CYAN}WG: ${WG_CONF_FILE}${NC}"
         fi
-    elif [ -f "$WARP_SYSTEM_CONF" ]; then
-        local sys_key
-        sys_key=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-        if [ -n "$sys_key" ]; then
-            WARP_KEYS_SRC="${GREEN}$WARP_SYSTEM_CONF${NC}"
-        else
-            WARP_KEYS_SRC="${YELLOW}локальные ключи${NC}"
+    elif [ "$CURRENT_OUTBOUND_MODE" = "warp" ]; then
+        # Определяем точный источник ключей
+        local cur_pk=""
+        if command -v jq >/dev/null 2>&1 && [ -f "$SINGBOX_CONF" ]; then
+            cur_pk=$(jq -r '.endpoints[] | select(.tag=="warp") | .private_key // empty' "$SINGBOX_CONF" 2>/dev/null || true)
+        fi
+        WARP_KEYS_SRC="${YELLOW}конфиг sing-box${NC}"
+        if [ -n "$cur_pk" ] && [ -f "$WARP_SYSTEM_CONF" ]; then
+            local sys_pk
+            sys_pk=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            if [ "$sys_pk" = "$cur_pk" ]; then
+                WARP_KEYS_SRC="${GREEN}$WARP_SYSTEM_CONF${NC}"
+            fi
+        fi
+        if [ -n "$cur_pk" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+            local wgcf_pk
+            wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            if [ "$wgcf_pk" = "$cur_pk" ]; then
+                WARP_KEYS_SRC="${GREEN}$WGCF_DIR/wgcf-profile.conf${NC}"
+            fi
+        fi
+        if [ -n "$cur_pk" ] && [ -f "/root/wgcf-profile.conf" ]; then
+            local root_pk
+            root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            if [ "$root_pk" = "$cur_pk" ]; then
+                WARP_KEYS_SRC="${GREEN}/root/wgcf-profile.conf${NC}"
+            fi
         fi
     else
         WARP_KEYS_SRC="${YELLOW}локальные ключи${NC}"
