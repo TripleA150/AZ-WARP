@@ -651,13 +651,9 @@ WARP_ADDRESS=""
 WARP_PRIVATE_KEY=""
 WARP_SOURCE=""
 
-if [ "$INSTALL_MODE" = "slave" ]; then
-    echo -e " - ${CYAN}Режим Slave — ключи WARP не требуются для установки.${NC}"
-    echo -e " - ${CYAN}Ключи будут получены автоматически при переключении на режим WARP.${NC}"
-elif [ "$INSTALL_MODE" = "wg" ]; then
-    echo -e " - ${CYAN}Режим WG — ключи WARP не требуются.${NC}"
-    echo -e " - ${CYAN}Данные WireGuard уже получены на предыдущем шаге.${NC}"
-    echo -e " - ${CYAN}Ключи будут получены автоматически при переключении на режим WARP.${NC}"
+if [ "$INSTALL_MODE" = "slave" ] || [ "$INSTALL_MODE" = "wg" ]; then
+    echo -e " - ${CYAN}Для выбранного режима WARP-ключи не требуются на этапе установки.${NC}"
+    echo -e " - ${CYAN}Они будут запрошены позже при переключении на режим WARP.${NC}"
 else
     echo -e "\n${YELLOW}Выбор источника WARP-ключей:${NC}"
 
@@ -666,8 +662,6 @@ else
     widx=1
 
     if [ -f "/etc/wireguard/warp.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/etc/wireguard/warp.conf" 2>/dev/null; then
-        sys_pk=""
-        sys_addr=""
         sys_pk=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         sys_addr=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         if [ -n "$sys_pk" ]; then
@@ -679,8 +673,6 @@ else
     fi
 
     if [ -f "$WGCF_DIR/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
-        wgcf_pk=""
-        wgcf_addr=""
         wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         wgcf_addr=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$wgcf_pk" ]; then
@@ -692,8 +684,6 @@ else
     fi
 
     if [ -f "/root/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
-        root_pk=""
-        root_addr=""
         root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         root_addr=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$root_pk" ]; then
@@ -709,7 +699,6 @@ else
     echo -e " ${YELLOW}${widx}.${NC} ${warp_labels[$((widx-1))]}"
 
     echo -e ""
-    warp_key_choice=""
     read -r -p "Выбор [по умолчанию 1]: " warp_key_choice < /dev/tty
     [ -z "$warp_key_choice" ] && warp_key_choice="1"
 
@@ -718,7 +707,7 @@ else
         warp_key_choice="1"
     fi
 
-    warp_selected=""="${warp_sources[$((warp_key_choice-1))]}"
+    warp_selected="${warp_sources[$((warp_key_choice-1))]}"
 
     case "$warp_selected" in
         system)
@@ -743,6 +732,9 @@ else
             ;;
         generate)
             echo -e " - ${CYAN}Генерация нового ключа WARP...${NC}"
+            mkdir -p "$WGCF_DIR"
+            cd "$WGCF_DIR" || exit 1
+
             if [ ! -f "/usr/local/bin/wgcf" ]; then
                 echo -e " - ${CYAN}Скачивание wgcf (${SYSTEM_ARCH})...${NC}"
                 WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_${SYSTEM_ARCH}"
@@ -753,19 +745,23 @@ else
                 chmod +x wgcf
                 mv wgcf /usr/local/bin/wgcf
             fi
+
             echo -e " - ${CYAN}Регистрация WARP (подождите)...${NC}"
             wgcf register --accept-tos > /dev/null 2>&1
             wgcf generate > /dev/null 2>&1
+
             if [ ! -f "wgcf-profile.conf" ]; then
                 echo -e "${RED}КРИТИЧЕСКАЯ ОШИБКА: wgcf-profile.conf не создан!${NC}"
-                echo -e "${YELLOW}Cloudflare мог заблокировать регистрацию.${NC}"
+                echo -e "${YELLOW}Cloudflare заблокировал регистрацию с этого IP.${NC}"
+                echo -e "${CYAN}Рекомендация: сгенерируйте ключ на домашнем ПК и положите wgcf-profile.conf в ${WGCF_DIR}/${NC}"
                 exit 1
             fi
+
             chmod 600 wgcf-profile.conf wgcf-account.toml 2>/dev/null || true
             WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
             WARP_ADDRESS=$(grep -m 1 '^Address = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
             WARP_SOURCE="$WGCF_DIR/wgcf-profile.conf"
-            echo -e " - ${GREEN}Новый ключ WARP сгенерирован!${NC}"
+            echo -e " - ${GREEN}Новый ключ WARP успешно сгенерирован!${NC}"
             ;;
     esac
 
