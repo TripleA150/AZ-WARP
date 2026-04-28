@@ -507,8 +507,8 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
     WG_SELECTED=false
     while [ "$WG_SELECTED" = false ]; do
         echo -e "\n${CYAN}Поиск WireGuard-конфигов в /root/ и /root/warper/...${NC}"
-        local -a wg_files=()
-        local wg_f
+        wg_files=()
+        wg_f=""
         for wg_dir in /root /root/warper; do
             if [ -d "$wg_dir" ]; then
                 while IFS= read -r -d '' wg_f; do
@@ -521,9 +521,9 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
 
         if [ ${#wg_files[@]} -gt 0 ]; then
             echo -e "${GREEN}Найдено конфигов: ${#wg_files[@]}${NC}"
-            local wi=1
+            wi=1
             for wf in "${wg_files[@]}"; do
-                local wep
+                wep=""
                 wep=$(grep -m 1 '^Endpoint' "$wf" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
                 echo -e " ${GREEN}${wi}.${NC} ${YELLOW}${wf}${NC} (${CYAN}${wep}${NC})"
                 ((wi++))
@@ -673,12 +673,13 @@ else
     else
     echo -e "\n${YELLOW}Выбор источника WARP-ключей:${NC}"
 
-    local -a warp_sources=()
-    local -a warp_labels=()
-    local widx=1
+    warp_sources=()
+    warp_labels=()
+    widx=1
 
     if [ -f "/etc/wireguard/warp.conf" ]; then
-        local sys_pk sys_addr
+        sys_pk=""
+        sys_addr=""
         sys_pk=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         sys_addr=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         if [ -n "$sys_pk" ]; then
@@ -690,7 +691,8 @@ else
     fi
 
     if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
-        local wgcf_pk wgcf_addr
+        wgcf_pk=""
+        wgcf_addr=""
         wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         wgcf_addr=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$wgcf_pk" ]; then
@@ -702,7 +704,8 @@ else
     fi
 
     if [ -f "/root/wgcf-profile.conf" ]; then
-        local root_pk root_addr
+        root_pk=""
+        root_addr=""
         root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         root_addr=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$root_pk" ]; then
@@ -718,7 +721,7 @@ else
     echo -e " ${YELLOW}${widx}.${NC} ${warp_labels[$((widx-1))]}"
 
     echo -e ""
-    local warp_key_choice
+    warp_key_choice=""
     read -r -p "Выбор [по умолчанию 1]: " warp_key_choice < /dev/tty
     [ -z "$warp_key_choice" ] && warp_key_choice="1"
 
@@ -727,7 +730,7 @@ else
         warp_key_choice="1"
     fi
 
-    local warp_selected="${warp_sources[$((warp_key_choice-1))]}"
+    warp_selected=""="${warp_sources[$((warp_key_choice-1))]}"
 
     case "$warp_selected" in
         system)
@@ -783,6 +786,7 @@ else
         exit 1
     fi
     echo -e " - ${GREEN}Ключи получены! Источник: $WARP_SOURCE${NC}"
+  fi
 fi
 
 echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IPv4 only)...${NC}"
@@ -812,12 +816,6 @@ if [ "$INSTALL_MODE" = "slave" ]; then
 elif [ "$INSTALL_MODE" = "wg" ]; then
     download_file "$REPO_URL/templates/config-wg.json.template" "$WARPER_DIR/config-wg.json.template" "шаблон WG" || exit 1
 
-    local wg_psk_sed=""
-    if [ -n "$WG_INSTALL_PRESHARED_KEY" ]; then
-        wg_psk_sed="$WG_INSTALL_PRESHARED_KEY"
-    fi
-
-    local tmp_wg
     tmp_wg=$(mktemp)
     sed \
         -e "s|__SUBNET__|$SUBNET|g" \
