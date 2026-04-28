@@ -513,7 +513,7 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
                 done < <(find "$wg_dir" -maxdepth 1 -name '*.conf' -print0 2>/dev/null)
             fi
         done
-
+        
         if [ ${#wg_files[@]} -gt 0 ]; then
             echo -e "${GREEN}Найдено конфигов: ${#wg_files[@]}${NC}"
             wi=1
@@ -578,13 +578,16 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
                     WG_INSTALL_CONF_FILE="manual"
                     WG_SELECTED=true
                     ;;
-                r|R) continue ;;
+                r|R)
+                    continue
+                    ;;
                 b|B)
                     echo -e "${YELLOW}Возврат к выбору режима.${NC}"
-                    # Перезапускаем выбор режима — нужен exec или цикл
                     exec bash "$0"
                     ;;
-                *) echo -e "${RED}Неверный выбор.${NC}" ;;
+                *)
+                    echo -e "${RED}Неверный выбор.${NC}"
+                    ;;
             esac
         else
             echo -e "${YELLOW}WireGuard-конфиги не найдены.${NC}"
