@@ -922,10 +922,11 @@ remove_iptables_rule() {
 get_warp_credentials() {
     local address="" private_key=""
 
-    if [ -f "$WARP_SYSTEM_CONF" ]; then
+    if [ -f "$WARP_SYSTEM_CONF" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WARP_SYSTEM_CONF" 2>/dev/null; then
         private_key=$(grep -m 1 '^PrivateKey' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         address=$(grep -m 1 '^Address' "$WARP_SYSTEM_CONF" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-        if [ -n "$private_key" ] && [ -n "$address" ]; then
+        if [ -n "$private_key" ]; then
+            [ -z "$address" ] && address="172.16.0.2/32"
             [[ ! "$address" =~ / ]] && address="${address}/32"
             echo "$address"
             echo "$private_key"
@@ -943,7 +944,7 @@ get_warp_credentials() {
         fi
     fi
 
-    if [ -f "$SINGBOX_CONF" ]; then
+    if [ -f "$SINGBOX_CONF" ] && grep -q '"tag": "warp"' "$SINGBOX_CONF" 2>/dev/null; then
         address=$(grep -o '"address": \[ "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
         private_key=$(grep -o '"private_key": "[^"]*"' "$SINGBOX_CONF" | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || true)
         if [ -n "$address" ] && [ -n "$private_key" ] && [ "$address" != "__WARP_ADDRESS__" ]; then
@@ -954,7 +955,7 @@ get_warp_credentials() {
     fi
 
     local wgcf_profile="$WGCF_DIR/wgcf-profile.conf"
-    if [ -f "$wgcf_profile" ]; then
+    if [ -f "$wgcf_profile" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$wgcf_profile" 2>/dev/null; then
         address=$(grep -m 1 '^Address = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
         private_key=$(grep -m 1 '^PrivateKey = ' "$wgcf_profile" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$address" ] && [ -n "$private_key" ]; then
