@@ -667,14 +667,13 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
     echo -e " - ${CYAN}Данные WireGuard уже получены на предыдущем шаге.${NC}"
     echo -e " - ${CYAN}Ключи будут получены автоматически при переключении на режим WARP.${NC}"
 else
-    if existing_keys=$(find_existing_warp_keys); then
-        WARP_ADDRESS=$(echo "$existing_keys" | sed -n '1p')
-        WARP_PRIVATE_KEY=$(echo "$existing_keys" | sed -n '2p')
-        WARP_SOURCE=$(echo "$existing_keys" | sed -n '3p')
-        echo -e " - ${GREEN}Найдены существующие WARP-ключи в: $WARP_SOURCE${NC}"
-        echo -e " - ${GREEN}Используем существующий аккаунт WARP.${NC}"
-    else
     echo -e "\n${YELLOW}Выбор источника WARP-ключей:${NC}"
+
+    warp_sources=()
+    warp_labels=()
+    widx=1
+
+    if [ -f "/etc/wireguard/warp.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/etc/wireguard/warp.conf" 2>/dev/null; then
 
     warp_sources=()
     warp_labels=()
@@ -693,7 +692,7 @@ else
         fi
     fi
 
-    if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+    if [ -f "$WGCF_DIR/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
         wgcf_pk=""
         wgcf_addr=""
         wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
@@ -706,7 +705,7 @@ else
         fi
     fi
 
-    if [ -f "/root/wgcf-profile.conf" ]; then
+    if [ -f "/root/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
         root_pk=""
         root_addr=""
         root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
@@ -789,7 +788,6 @@ else
         exit 1
     fi
     echo -e " - ${GREEN}Ключи получены! Источник: $WARP_SOURCE${NC}"
-  fi
 fi
 
 echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IPv4 only)...${NC}"
