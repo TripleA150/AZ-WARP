@@ -1589,7 +1589,8 @@ switch_outbound_mode() {
                     warp_creds_info="существующий конфиг sing-box"
                 fi
             fi
-            if [ -z "$warp_creds_info" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+            if [ -z "$warp_creds_info" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ] && \
+               grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
                 warp_creds_info="$WGCF_DIR/wgcf-profile.conf"
             fi
             if [ -n "$warp_creds_info" ]; then
@@ -2265,14 +2266,16 @@ show_main_menu() {
                 WARP_KEYS_SRC="${GREEN}$WARP_SYSTEM_CONF${NC}"
             fi
         fi
-        if [ -n "$cur_pk" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+        if [ -n "$cur_pk" ] && [ -f "$WGCF_DIR/wgcf-profile.conf" ] && \
+           grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
             local wgcf_pk=""
             wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
             if [ "$wgcf_pk" = "$cur_pk" ]; then
                 WARP_KEYS_SRC="${GREEN}$WGCF_DIR/wgcf-profile.conf${NC}"
             fi
         fi
-        if [ -n "$cur_pk" ] && [ -f "/root/wgcf-profile.conf" ]; then
+        if [ -n "$cur_pk" ] && [ -f "/root/wgcf-profile.conf" ] && \
+           grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
             local root_pk=""
             root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
             if [ "$root_pk" = "$cur_pk" ]; then
