@@ -210,15 +210,12 @@ ensure_iptables_rule() {
 find_existing_warp_keys() {
     local address="" private_key=""
 
-    # Приоритет 1: /etc/wireguard/warp.conf (от AntiZapret WARP)
-    if [ -f "/etc/wireguard/warp.conf" ]; then
+    if [ -f "/etc/wireguard/warp.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/etc/wireguard/warp.conf" 2>/dev/null; then
         private_key=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
         address=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-        if [ -n "$private_key" ] && [ -n "$address" ]; then
-            # Добавляем /32 если нет маски
-            if [[ ! "$address" =~ / ]]; then
-                address="${address}/32"
-            fi
+        if [ -n "$private_key" ]; then
+            [ -z "$address" ] && address="172.16.0.2/32"
+            [[ ! "$address" =~ / ]] && address="${address}/32"
             echo "$address"
             echo "$private_key"
             echo "/etc/wireguard/warp.conf"
@@ -226,8 +223,7 @@ find_existing_warp_keys() {
         fi
     fi
 
-    # Приоритет 2: Существующий профиль WARPER
-    if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+    if [ -f "$WGCF_DIR/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
         address=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         private_key=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$private_key" ] && [ -n "$address" ]; then
@@ -238,8 +234,7 @@ find_existing_warp_keys() {
         fi
     fi
 
-    # Приоритет 3: Профиль в /root/
-    if [ -f "/root/wgcf-profile.conf" ]; then
+    if [ -f "/root/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
         address=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         private_key=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
         if [ -n "$private_key" ] && [ -n "$address" ]; then
@@ -388,29 +383,44 @@ echo -e "${GREEN}✔ Подсеть $SUBNET установлена.${NC}"
 
 echo -e "\n${YELLOW}⚙️  Выбор режима маршрутизации${NC}"
 echo -e ""
-echo -e " ${GREEN}1.${NC} WARP — трафик доменов идёт через локальный Cloudflare WARP"
+echo -e " ${GREEN}1.${NC} WARP  — трафик доменов через Cloudflare WARP"
 echo -e "    ${CYAN}(стандартный режим, требуются WARP-ключи)${NC}"
 echo -e ""
-echo -e " ${GREEN}2.${NC} Slave — трафик идёт через внешний донор-сервер"
-echo -e "    ${CYAN}(нужен второй сервер с установленным warperslave)${NC}"
+echo -e " ${GREEN}2.${NC} Slave — трафик через внешний донор-сервер (Shadowsocks)"
+echo -e "    ${CYAN}(нужен второй сервер с warperslave)${NC}"
+echo -e ""
+echo -e " ${GREEN}3.${NC} WG    — трафик через WireGuard-соединение"
+echo -e "    ${CYAN}(нужен .conf файл от WireGuard-сервера, в папке /root/)${NC}"
 
 INSTALL_MODE="warp"
 while true; do
-    read -r -p "Выбор [1-2] (по умолчанию 1): " install_mode_choice < /dev/tty
+    read -r -p "Выбор [1-3] (по умолчанию 1): " install_mode_choice < /dev/tty
     if [[ -z "$install_mode_choice" || "$install_mode_choice" == "1" ]]; then
         INSTALL_MODE="warp"
         break
     elif [[ "$install_mode_choice" == "2" ]]; then
         INSTALL_MODE="slave"
         break
+    elif [[ "$install_mode_choice" == "3" ]]; then
+        INSTALL_MODE="wg"
+        break
     else
-        echo -e "${RED}Введите 1 или 2.${NC}"
+        echo -e "${RED}Введите 1, 2 или 3.${NC}"
     fi
 done
 
 SLAVE_SERVER_INSTALL=""
 SLAVE_PORT_INSTALL="8444"
 SLAVE_PASSWORD_INSTALL=""
+
+WG_INSTALL_ADDRESS=""
+WG_INSTALL_PRIVATE_KEY=""
+WG_INSTALL_PUBLIC_KEY=""
+WG_INSTALL_PRESHARED_KEY=""
+WG_INSTALL_ENDPOINT_HOST=""
+WG_INSTALL_ENDPOINT_PORT=""
+WG_INSTALL_KEEPALIVE="15"
+WG_INSTALL_CONF_FILE=""
 
 if [ "$INSTALL_MODE" = "slave" ]; then
     echo -e "\n${CYAN}Настройка подключения к донор-серверу${NC}"
@@ -441,6 +451,181 @@ if [ "$INSTALL_MODE" = "slave" ]; then
     done
 
     echo -e " - ${GREEN}Режим: Slave ($SLAVE_SERVER_INSTALL:$SLAVE_PORT_INSTALL)${NC}"
+
+elif [ "$INSTALL_MODE" = "wg" ]; then
+    echo -e "\n${CYAN}Настройка WireGuard-соединения${NC}"
+
+    # Функции фильтрации WG-конфигов для installer
+    _is_valid_wg_conf() {
+        local file="$1"
+        [ -f "$file" ] || return 1
+        grep -q '^\[Peer\]' "$file" || return 1
+        grep -q '^Endpoint' "$file" || return 1
+        grep -q '^PublicKey' "$file" || return 1
+        grep -q 'engage.cloudflareclient.com' "$file" 2>/dev/null && return 1
+        grep -q '162.159.192.1' "$file" 2>/dev/null && return 1
+        grep -q '162.159.193.1' "$file" 2>/dev/null && return 1
+        grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$file" 2>/dev/null && return 1
+        return 0
+    }
+
+    _parse_wg_conf_install() {
+        local file="$1"
+        WG_INSTALL_CONF_FILE="$file"
+        WG_INSTALL_PRIVATE_KEY=$(grep -m 1 '^PrivateKey' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        WG_INSTALL_ADDRESS=$(grep -m 1 '^Address' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        WG_INSTALL_ADDRESS="${WG_INSTALL_ADDRESS%%,*}"
+        WG_INSTALL_ADDRESS=$(echo "$WG_INSTALL_ADDRESS" | tr -d ' ')
+        WG_INSTALL_PUBLIC_KEY=$(grep -m 1 '^PublicKey' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        WG_INSTALL_PRESHARED_KEY=$(grep -m 1 '^PresharedKey' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        local ep; ep=$(grep -m 1 '^Endpoint' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        WG_INSTALL_ENDPOINT_HOST="${ep%:*}"
+        WG_INSTALL_ENDPOINT_PORT="${ep##*:}"
+        local ka; ka=$(grep -m 1 '^PersistentKeepalive' "$file" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        WG_INSTALL_KEEPALIVE="${ka:-15}"
+
+        # Валидация всех обязательных параметров
+        local missing=()
+        [ -z "$WG_INSTALL_ADDRESS" ]        && missing+=("Address")
+        [ -z "$WG_INSTALL_PRIVATE_KEY" ]    && missing+=("PrivateKey")
+        [ -z "$WG_INSTALL_PUBLIC_KEY" ]     && missing+=("PublicKey")
+        [ -z "$WG_INSTALL_PRESHARED_KEY" ]  && missing+=("PresharedKey")
+        [ -z "$WG_INSTALL_ENDPOINT_HOST" ]  && missing+=("Endpoint")
+
+        if [ ${#missing[@]} -gt 0 ]; then
+            echo -e "${RED}В файле отсутствуют обязательные параметры: ${missing[*]}${NC}"
+            return 1
+        fi
+        return 0
+    }
+
+    WG_SELECTED=false
+    while [ "$WG_SELECTED" = false ]; do
+        echo -e "\n${CYAN}Поиск WireGuard-конфигов в /root/ и /root/warper/...${NC}"
+        wg_files=()
+        wg_f=""
+        for wg_dir in /root /root/warper; do
+            if [ -d "$wg_dir" ]; then
+                while IFS= read -r -d '' wg_f; do
+                    if _is_valid_wg_conf "$wg_f"; then
+                        wg_files+=("$wg_f")
+                    fi
+                done < <(find "$wg_dir" -maxdepth 1 -name '*.conf' -print0 2>/dev/null)
+            fi
+        done
+
+        if [ ${#wg_files[@]} -gt 0 ]; then
+            echo -e "${GREEN}Найдено конфигов: ${#wg_files[@]}${NC}"
+            wi=1
+            for wf in "${wg_files[@]}"; do
+                wep=""
+                wep=$(grep -m 1 '^Endpoint' "$wf" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+                echo -e " ${GREEN}${wi}.${NC} ${YELLOW}${wf}${NC} (${CYAN}${wep}${NC})"
+                ((wi++))
+            done
+            echo -e ""
+            echo -e " ${CYAN}M.${NC} Ввести данные вручную"
+            echo -e " ${CYAN}R.${NC} Обновить список"
+            echo -e " ${CYAN}B.${NC} Вернуться к выбору режима"
+
+            read -r -p "Выбор: " wg_choice < /dev/tty
+            case "$wg_choice" in
+                [0-9]*)
+                    if (( wg_choice >= 1 && wg_choice <= ${#wg_files[@]} )); then
+                        if _parse_wg_conf_install "${wg_files[$((wg_choice-1))]}"; then
+                            WG_SELECTED=true
+                            echo -e "${GREEN}Выбран: ${wg_files[$((wg_choice-1))]}${NC}"
+                        else
+                            echo -e "${YELLOW}Выберите другой файл или введите данные вручную.${NC}"
+                        fi
+                    else
+                        echo -e "${RED}Неверный номер.${NC}"
+                    fi
+                    ;;
+                m|M)
+                    echo -e "\n${CYAN}Ввод данных WG вручную${NC}"
+                    while true; do
+                        read -r -p "Endpoint (IP:порт): " ep_in < /dev/tty
+                        if [[ "$ep_in" =~ ^[0-9a-zA-Z._-]+:[0-9]+$ ]]; then
+                            WG_INSTALL_ENDPOINT_HOST="${ep_in%:*}"
+                            WG_INSTALL_ENDPOINT_PORT="${ep_in##*:}"
+                            break
+                        fi
+                        echo -e "${RED}Формат: IP:порт${NC}"
+                    done
+                    while true; do
+                        read -r -p "Address (например 172.28.8.3/32): " WG_INSTALL_ADDRESS < /dev/tty
+                        [ -n "$WG_INSTALL_ADDRESS" ] && break
+                        echo -e "${RED}Address обязателен!${NC}"
+                    done
+                    while true; do
+                        read -r -p "PrivateKey: " WG_INSTALL_PRIVATE_KEY < /dev/tty
+                        [ -n "$WG_INSTALL_PRIVATE_KEY" ] && break
+                        echo -e "${RED}PrivateKey обязателен!${NC}"
+                    done
+                    while true; do
+                        read -r -p "PublicKey: " WG_INSTALL_PUBLIC_KEY < /dev/tty
+                        [ -n "$WG_INSTALL_PUBLIC_KEY" ] && break
+                        echo -e "${RED}PublicKey обязателен!${NC}"
+                    done
+                    while true; do
+                        read -r -p "PresharedKey: " WG_INSTALL_PRESHARED_KEY < /dev/tty
+                        [ -n "$WG_INSTALL_PRESHARED_KEY" ] && break
+                        echo -e "${RED}PresharedKey обязателен!${NC}"
+                    done
+                    read -r -p "PersistentKeepalive [15]: " WG_INSTALL_KEEPALIVE < /dev/tty
+                    WG_INSTALL_KEEPALIVE="${WG_INSTALL_KEEPALIVE:-15}"
+                    WG_INSTALL_CONF_FILE="manual"
+                    WG_SELECTED=true
+                    ;;
+                r|R) continue ;;
+                b|B)
+                    echo -e "${YELLOW}Возврат к выбору режима.${NC}"
+                    # Перезапускаем выбор режима — нужен exec или цикл
+                    exec bash "$0"
+                    ;;
+                *) echo -e "${RED}Неверный выбор.${NC}" ;;
+            esac
+        else
+            echo -e "${YELLOW}WireGuard-конфиги не найдены.${NC}"
+            echo -e ""
+            echo -e " ${GREEN}1.${NC} Ввести данные вручную"
+            echo -e " ${CYAN}2.${NC} Положите .conf в /root/ и нажите 2 для обновления"
+            echo -e " ${CYAN}0.${NC} Выбрать другой режим"
+
+            read -r -p "Выбор: " wg_choice < /dev/tty
+            case "$wg_choice" in
+                1)
+                    echo -e "\n${CYAN}Ввод данных WG вручную${NC}"
+                    while true; do
+                        read -r -p "Endpoint (IP:порт): " ep_in < /dev/tty
+                        if [[ "$ep_in" =~ ^[0-9a-zA-Z._-]+:[0-9]+$ ]]; then
+                            WG_INSTALL_ENDPOINT_HOST="${ep_in%:*}"
+                            WG_INSTALL_ENDPOINT_PORT="${ep_in##*:}"
+                            break
+                        fi
+                        echo -e "${RED}Формат: IP:порт${NC}"
+                    done
+                    read -r -p "Address (например 172.28.8.3/32): " WG_INSTALL_ADDRESS < /dev/tty
+                    read -r -p "PrivateKey: " WG_INSTALL_PRIVATE_KEY < /dev/tty
+                    read -r -p "PublicKey: " WG_INSTALL_PUBLIC_KEY < /dev/tty
+                    read -r -p "PresharedKey (Enter если нет): " WG_INSTALL_PRESHARED_KEY < /dev/tty
+                    read -r -p "PersistentKeepalive [15]: " WG_INSTALL_KEEPALIVE < /dev/tty
+                    [ -z "$WG_INSTALL_KEEPALIVE" ] && WG_INSTALL_KEEPALIVE="15"
+                    WG_INSTALL_CONF_FILE="manual"
+                    WG_SELECTED=true
+                    ;;
+                2)
+                    echo -e "${YELLOW}Положите .conf файл и нажмите Enter...${NC}"
+                    read -r -p "" < /dev/tty
+                    ;;
+                0) exec bash "$0" ;;
+                *) echo -e "${RED}Неверный выбор.${NC}" ;;
+            esac
+        fi
+    done
+
+    echo -e " - ${GREEN}Режим: WG ($WG_INSTALL_ENDPOINT_HOST:$WG_INSTALL_ENDPOINT_PORT)${NC}"
 fi
 
 echo -e "\n${CYAN}Начинаем процесс установки...${NC}"
@@ -460,7 +645,6 @@ else
 fi
 
 echo -e "\n${YELLOW}[2/8] Получение ключей Cloudflare WARP...${NC}"
-cd "$WGCF_DIR" || exit 1
 
 WARP_ADDRESS=""
 WARP_PRIVATE_KEY=""
@@ -468,57 +652,145 @@ WARP_SOURCE=""
 
 if [ "$INSTALL_MODE" = "slave" ]; then
     echo -e " - ${CYAN}Режим Slave — ключи WARP не требуются для установки.${NC}"
-    echo -e " - ${CYAN}Ключи будут получены автоматически при переключении на режим WARP.${NC}"
-else
-    if existing_keys=$(find_existing_warp_keys); then
-        WARP_ADDRESS=$(echo "$existing_keys" | sed -n '1p')
-        WARP_PRIVATE_KEY=$(echo "$existing_keys" | sed -n '2p')
-        WARP_SOURCE=$(echo "$existing_keys" | sed -n '3p')
-        echo -e " - ${GREEN}Найдены существующие WARP-ключи в: $WARP_SOURCE${NC}"
-        echo -e " - ${GREEN}Используем существующий аккаунт WARP.${NC}"
-    else
-        echo -e " - ${CYAN}Существующие WARP-ключи не найдены. Генерируем новые...${NC}"
+    echo -e " - ${CYAN}Они будут запрошены позже при переключении на режим WARP.${NC}"
 
-        if [ ! -f "/usr/local/bin/wgcf" ]; then
-            echo -e " - ${CYAN}Скачивание утилиты wgcf (архитектура: ${SYSTEM_ARCH})...${NC}"
-            WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_${SYSTEM_ARCH}"
-            if ! wget -qO wgcf "$WGCF_URL"; then
-                echo -e " - ${RED}Ошибка загрузки wgcf для архитектуры ${SYSTEM_ARCH}!${NC}"
+elif [ "$INSTALL_MODE" = "wg" ]; then
+    echo -e " - ${CYAN}Режим WG — ключи WARP не требуются.${NC}"
+    echo -e " - ${CYAN}Данные WireGuard уже получены на предыдущем шаге.${NC}"
+
+else
+    # === Режим WARP ===
+    echo -e "\n${YELLOW}Выбор источника WARP-ключей:${NC}"
+
+    warp_sources=()
+    warp_labels=()
+    widx=1
+
+    if [ -f "/etc/wireguard/warp.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/etc/wireguard/warp.conf" 2>/dev/null; then
+        sys_pk=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        sys_addr=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+        if [ -n "$sys_pk" ]; then
+            warp_sources+=("system")
+            warp_labels+=("/etc/wireguard/warp.conf (${sys_addr:-без адреса}) — рекомендуется")
+            echo -e " ${GREEN}${widx}.${NC} ${warp_labels[$((widx-1))]}"
+            ((widx++))
+        fi
+    fi
+
+    if [ -f "$WGCF_DIR/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
+        wgcf_pk=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        wgcf_addr=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$wgcf_pk" ]; then
+            warp_sources+=("wgcf")
+            warp_labels+=("$WGCF_DIR/wgcf-profile.conf ($wgcf_addr)")
+            echo -e " ${CYAN}${widx}.${NC} ${warp_labels[$((widx-1))]}"
+            ((widx++))
+        fi
+    fi
+
+    if [ -f "/root/wgcf-profile.conf" ] && grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
+        root_pk=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        root_addr=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+        if [ -n "$root_pk" ]; then
+            warp_sources+=("root")
+            warp_labels+=("/root/wgcf-profile.conf ($root_addr)")
+            echo -e " ${CYAN}${widx}.${NC} ${warp_labels[$((widx-1))]}"
+            ((widx++))
+        fi
+    fi
+
+    warp_sources+=("generate")
+    warp_labels+=("Сгенерировать новый ключ WARP")
+    echo -e " ${YELLOW}${widx}.${NC} ${warp_labels[$((widx-1))]}"
+
+    echo -e ""
+    read -r -p "Выбор [по умолчанию 1]: " warp_key_choice < /dev/tty
+    [ -z "$warp_key_choice" ] && warp_key_choice="1"
+
+    if ! [[ "$warp_key_choice" =~ ^[0-9]+$ ]] || (( warp_key_choice < 1 || warp_key_choice > ${#warp_sources[@]} )); then
+        echo -e "${YELLOW}Выбран вариант по умолчанию (1).${NC}"
+        warp_key_choice="1"
+    fi
+
+    warp_selected="${warp_sources[$((warp_key_choice-1))]}"
+
+    case "$warp_selected" in
+        system)
+            WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            WARP_ADDRESS=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            [ -z "$WARP_ADDRESS" ] && WARP_ADDRESS="172.16.0.2/32"
+            [[ ! "$WARP_ADDRESS" =~ / ]] && WARP_ADDRESS="${WARP_ADDRESS}/32"
+            WARP_SOURCE="/etc/wireguard/warp.conf"
+            echo -e " - ${GREEN}Используем ключи из /etc/wireguard/warp.conf${NC}"
+            ;;
+        wgcf)
+            WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            WARP_ADDRESS=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            WARP_SOURCE="$WGCF_DIR/wgcf-profile.conf"
+            echo -e " - ${GREEN}Используем ключи из $WGCF_DIR/wgcf-profile.conf${NC}"
+            ;;
+        root)
+            WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            WARP_ADDRESS=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            WARP_SOURCE="/root/wgcf-profile.conf"
+            echo -e " - ${GREEN}Используем ключи из /root/wgcf-profile.conf${NC}"
+            ;;
+        generate)
+            echo -e " - ${CYAN}Попытка генерации нового ключа WARP...${NC}"
+            mkdir -p "$WGCF_DIR"
+            cd "$WGCF_DIR" || { echo -e "${RED}Не удалось перейти в $WGCF_DIR${NC}"; exit 1; }
+
+            if [ ! -f "/usr/local/bin/wgcf" ]; then
+                echo -e " - ${CYAN}Скачивание wgcf (${SYSTEM_ARCH})...${NC}"
+                WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_${SYSTEM_ARCH}"
+                if ! wget -qO wgcf "$WGCF_URL"; then
+                    echo -e "${RED}Ошибка загрузки wgcf!${NC}"
+                    exit 1
+                fi
+                chmod +x wgcf
+                mv wgcf /usr/local/bin/wgcf
+            fi
+
+            echo -e " - ${CYAN}Регистрация нового WARP-аккаунта...${NC}"
+            /usr/local/bin/wgcf register --accept-tos > /dev/null 2>&1 || true
+
+            echo -e " - ${CYAN}Генерация конфигурации...${NC}"
+            /usr/local/bin/wgcf generate > /dev/null 2>&1 || true
+
+            if [ ! -f "wgcf-profile.conf" ]; then
+                echo -e "${RED}================================================${NC}"
+                echo -e "${RED}Файл wgcf-profile.conf не создан!${NC}"
+                echo -e "${YELLOW}Cloudflare заблокировал регистрацию с этого IP.${NC}"
+                echo -e "${CYAN}Решение:${NC}"
+                echo -e "1. Сгенерируйте wgcf-profile.conf на домашнем ПК"
+                echo -e "2. Положите его в: ${YELLOW}${WGCF_DIR}/${NC}"
+                echo -e "3. Запустите установку заново"
+                echo -e "${RED}================================================${NC}"
                 exit 1
             fi
-            chmod +x wgcf
-            mv wgcf /usr/local/bin/wgcf
-        fi
 
-        echo -e " - ${CYAN}Регистрация аккаунта Cloudflare WARP (подождите)...${NC}"
-        wgcf register --accept-tos > /dev/null 2>&1
-        wgcf generate > /dev/null 2>&1
+            chmod 600 wgcf-profile.conf wgcf-account.toml 2>/dev/null || true
 
-        if [ ! -f "wgcf-profile.conf" ]; then
-            echo -e "\n${RED}================================================${NC}"
-            echo -e "${RED}КРИТИЧЕСКАЯ ОШИБКА: Файл wgcf-profile.conf не был создан!${NC}"
-            echo -e "${YELLOW}Скорее всего Cloudflare заблокировал регистрацию с IP-адреса вашего сервера.${NC}"
-            echo -e "${CYAN}Решение:${NC}"
-            echo -e "1. Сгенерируйте файл wgcf-profile.conf на своем домашнем ПК (Windows/Mac/Linux)."
-            echo -e "2. Положите этот файл в директорию ${YELLOW}${WGCF_DIR}/${NC} на сервере."
-            echo -e "3. Запустите скрипт установки заново."
-            echo -e "${RED}================================================${NC}"
-            exit 1
-        fi
+            WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
+            WARP_ADDRESS=$(grep -m 1 '^Address = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
+            WARP_SOURCE="$WGCF_DIR/wgcf-profile.conf"
 
-        chmod 600 "$WGCF_DIR"/wgcf-profile.conf 2>/dev/null || true
-        chmod 600 "$WGCF_DIR"/wgcf-account.toml 2>/dev/null || true
+            if [ -z "$WARP_PRIVATE_KEY" ] || [ -z "$WARP_ADDRESS" ]; then
+                echo -e "${RED}Не удалось извлечь ключи из сгенерированного файла.${NC}"
+                echo -e "${YELLOW}Содержимое файла:${NC}"
+                cat wgcf-profile.conf 2>/dev/null || true
+                exit 1
+            fi
 
-        WARP_ADDRESS=$(grep -m 1 '^Address = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
-        WARP_PRIVATE_KEY=$(grep -m 1 '^PrivateKey = ' wgcf-profile.conf | awk '{print $3}' | tr -d '\r\n')
-        WARP_SOURCE="$WGCF_DIR/wgcf-profile.conf"
-    fi
+            echo -e " - ${GREEN}Новый ключ WARP успешно сгенерирован!${NC}"
+            ;;
+    esac
 
     if [ -z "$WARP_ADDRESS" ] || [ -z "$WARP_PRIVATE_KEY" ]; then
         echo -e " - ${RED}Ошибка: Не удалось извлечь ключи WARP.${NC}"
         exit 1
     fi
-    echo -e " - ${GREEN}Ключи успешно получены!${NC}"
+    echo -e " - ${GREEN}Ключи получены! Источник: $WARP_SOURCE${NC}"
 fi
 
 echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IPv4 only)...${NC}"
@@ -544,6 +816,50 @@ if [ "$INSTALL_MODE" = "slave" ]; then
         echo "SLAVE_PASSWORD=$SLAVE_PASSWORD_INSTALL"
     } > "$WARPER_DIR/slave_mode.conf"
     chmod 600 "$WARPER_DIR/slave_mode.conf"
+    
+elif [ "$INSTALL_MODE" = "wg" ]; then
+    download_file "$REPO_URL/templates/config-wg.json.template" "$WARPER_DIR/config-wg.json.template" "шаблон WG" || exit 1
+
+    tmp_wg=$(mktemp)
+    sed \
+        -e "s|__SUBNET__|$SUBNET|g" \
+        -e "s|__TUN_IP__|$TUN_IP|g" \
+        -e "s|__WG_ADDRESS__|$WG_INSTALL_ADDRESS|g" \
+        -e "s|__WG_PRIVATE_KEY__|$WG_INSTALL_PRIVATE_KEY|g" \
+        -e "s|__WG_PUBLIC_KEY__|$WG_INSTALL_PUBLIC_KEY|g" \
+        -e "s|__WG_ENDPOINT_HOST__|$WG_INSTALL_ENDPOINT_HOST|g" \
+        -e "s|__WG_ENDPOINT_PORT__|$WG_INSTALL_ENDPOINT_PORT|g" \
+        -e "s|__WG_KEEPALIVE__|$WG_INSTALL_KEEPALIVE|g" \
+        "$WARPER_DIR/config-wg.json.template" > "$tmp_wg"
+
+    if [ -z "$WG_INSTALL_PRESHARED_KEY" ]; then
+        sed -i '/"pre_shared_key"/d' "$tmp_wg"
+    else
+        sed -i "s|__WG_PRESHARED_KEY__|$WG_INSTALL_PRESHARED_KEY|g" "$tmp_wg"
+    fi
+
+    mv "$tmp_wg" "$SINGBOX_CONF"
+
+    # Сохраняем WG-настройки
+    {
+        echo "OUTBOUND_MODE=wg"
+        echo "SLAVE_SERVER="
+        echo "SLAVE_PORT=8444"
+        echo "SLAVE_PASSWORD="
+    } > "$WARPER_DIR/slave_mode.conf"
+    chmod 600 "$WARPER_DIR/slave_mode.conf"
+
+    {
+        echo "WG_CONF_FILE=$WG_INSTALL_CONF_FILE"
+        echo "WG_ADDRESS=$WG_INSTALL_ADDRESS"
+        echo "WG_PRIVATE_KEY=$WG_INSTALL_PRIVATE_KEY"
+        echo "WG_PUBLIC_KEY=$WG_INSTALL_PUBLIC_KEY"
+        echo "WG_PRESHARED_KEY=$WG_INSTALL_PRESHARED_KEY"
+        echo "WG_ENDPOINT_HOST=$WG_INSTALL_ENDPOINT_HOST"
+        echo "WG_ENDPOINT_PORT=$WG_INSTALL_ENDPOINT_PORT"
+        echo "WG_KEEPALIVE=$WG_INSTALL_KEEPALIVE"
+    } > "$WARPER_DIR/wg_mode.conf"
+    chmod 600 "$WARPER_DIR/wg_mode.conf"
 else
     download_file "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "шаблон config.json" || exit 1
 
@@ -640,6 +956,7 @@ download_file "$REPO_URL/uninstaller.sh" "$WARPER_DIR/uninstaller.sh" "деин�
 download_file "$REPO_URL/version" "$WARPER_DIR/version" "файл версии" || exit 1
 download_file "$REPO_URL/templates/config-slave-master.json.template" "$WARPER_DIR/config-slave-master.json.template" "шаблон slave-master" || exit 1
 download_file "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "шаблон config.json (WARP)" || exit 1
+download_file "$REPO_URL/templates/config-wg.json.template" "$WARPER_DIR/config-wg.json.template" "шаблон WG" || exit 1
 
 chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
 ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper

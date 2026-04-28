@@ -1,0 +1,52 @@
+{
+  "log": { "level": "info" },
+  "dns": {
+    "servers": [
+      { "tag": "real-dns", "type": "udp", "server": "1.1.1.1", "detour": "wg" },
+      { "tag": "fakeip-dns", "type": "fakeip", "inet4_range": "__SUBNET__" }
+    ],
+    "rules": [
+      { "query_type": ["A"], "server": "fakeip-dns" }
+    ],
+    "independent_cache": true,
+    "strategy": "ipv4_only"
+  },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "wg",
+      "name": "wg-tun",
+      "system": false,
+      "mtu": 1420,
+      "address": [ "__WG_ADDRESS__" ],
+      "private_key": "__WG_PRIVATE_KEY__",
+      "peers": [
+        {
+          "address": "__WG_ENDPOINT_HOST__",
+          "port": __WG_ENDPOINT_PORT__,
+          "public_key": "__WG_PUBLIC_KEY__",
+          "pre_shared_key": "__WG_PRESHARED_KEY__",
+          "allowed_ips": ["0.0.0.0/0"],
+          "persistent_keepalive_interval": __WG_KEEPALIVE__
+        }
+      ]
+    }
+  ],
+  "inbounds": [
+    { "type": "direct", "tag": "dns-in", "listen": "127.0.0.1", "listen_port": 40000, "network": "udp" },
+    { "type": "tun", "tag": "tun-in", "interface_name": "singbox-tun", "address": ["__TUN_IP__"], "auto_route": false, "strict_route": false, "stack": "system" }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "rules": [
+      { "inbound": "dns-in", "action": "hijack-dns" },
+      { "protocol": "dns", "action": "hijack-dns" },
+      { "inbound": "tun-in", "outbound": "wg" }
+    ],
+    "default_domain_resolver": "real-dns",
+    "auto_detect_interface": true,
+    "final": "direct"
+  }
+}

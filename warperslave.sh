@@ -244,34 +244,47 @@ get_local_public_ipv4() {
 find_warp_keys() {
     local address="" private_key=""
 
+    # Приоритет 1: /etc/wireguard/warp.conf
     if [ -f "/etc/wireguard/warp.conf" ]; then
-        private_key=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-        address=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
-        if [ -n "$private_key" ] && [ -n "$address" ]; then
-            [[ ! "$address" =~ / ]] && address="${address}/32"
-            echo "$address"
-            echo "$private_key"
-            return 0
+        if grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/etc/wireguard/warp.conf" 2>/dev/null; then
+            private_key=$(grep -m 1 '^PrivateKey' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            address=$(grep -m 1 '^Address' "/etc/wireguard/warp.conf" | awk -F'= ' '{print $2}' | tr -d ' \r\n')
+            if [ -n "$private_key" ]; then
+                [ -z "$address" ] && address="172.16.0.2/32"
+                [[ ! "$address" =~ / ]] && address="${address}/32"
+                echo "$address"
+                echo "$private_key"
+                echo "/etc/wireguard/warp.conf"
+                return 0
+            fi
         fi
     fi
 
-    if [ -f "$SLAVE_DIR/wgcf/wgcf-profile.conf" ]; then
-        address=$(grep -m 1 '^Address = ' "$SLAVE_DIR/wgcf/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
-        private_key=$(grep -m 1 '^PrivateKey = ' "$SLAVE_DIR/wgcf/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
-        if [ -n "$private_key" ] && [ -n "$address" ]; then
-            echo "$address"
-            echo "$private_key"
-            return 0
+    # Приоритет 2: Локальный wgcf-profile
+    if [ -f "$WGCF_DIR/wgcf-profile.conf" ]; then
+        if grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$WGCF_DIR/wgcf-profile.conf" 2>/dev/null; then
+            address=$(grep -m 1 '^Address = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            private_key=$(grep -m 1 '^PrivateKey = ' "$WGCF_DIR/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            if [ -n "$private_key" ] && [ -n "$address" ]; then
+                echo "$address"
+                echo "$private_key"
+                echo "$WGCF_DIR/wgcf-profile.conf"
+                return 0
+            fi
         fi
     fi
 
+    # Приоритет 3: /root/wgcf-profile.conf
     if [ -f "/root/wgcf-profile.conf" ]; then
-        address=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
-        private_key=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
-        if [ -n "$private_key" ] && [ -n "$address" ]; then
-            echo "$address"
-            echo "$private_key"
-            return 0
+        if grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "/root/wgcf-profile.conf" 2>/dev/null; then
+            address=$(grep -m 1 '^Address = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            private_key=$(grep -m 1 '^PrivateKey = ' "/root/wgcf-profile.conf" | awk '{print $3}' | tr -d '\r\n')
+            if [ -n "$private_key" ] && [ -n "$address" ]; then
+                echo "$address"
+                echo "$private_key"
+                echo "/root/wgcf-profile.conf"
+                return 0
+            fi
         fi
     fi
 
