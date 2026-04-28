@@ -470,9 +470,7 @@ elif [ "$INSTALL_MODE" = "wg" ]; then
         grep -q 'engage.cloudflareclient.com' "$file" 2>/dev/null && return 1
         grep -q '162.159.192.1' "$file" 2>/dev/null && return 1
         grep -q '162.159.193.1' "$file" 2>/dev/null && return 1
-        local bn; bn=$(basename "$file")
-        [[ "$bn" == "wgcf-profile.conf" ]] && return 1
-        [[ "$bn" == "warp.conf" ]] && return 1
+        grep -q 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=' "$file" 2>/dev/null && return 1
         return 0
     }
 
