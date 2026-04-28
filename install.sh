@@ -780,6 +780,7 @@ else
         exit 1
     fi
     echo -e " - ${GREEN}Ключи получены! Источник: $WARP_SOURCE${NC}"
+  fi
 fi
 
 echo -e "\n${YELLOW}[3/8] Создание конфигурации sing-box (IPv4 only)...${NC}"
