@@ -196,12 +196,6 @@ is_valid_wg_conf() {
     if grep -q '162.159.193.1' "$file" 2>/dev/null; then
         return 1
     fi
-    # Исключаем файлы из wgcf (WARP)
-    local basename
-    basename=$(basename "$file")
-    if [[ "$basename" == "wgcf-profile.conf" ]] || [[ "$basename" == "warp.conf" ]]; then
-        return 1
-    fi
     return 0
 }
 
@@ -1784,6 +1778,7 @@ update_warper() {
     download_file_safe "$REPO_URL/version" "$WARPER_DIR/version" "version" || return 1
     download_file_safe "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "config.json.template" || return 1
     download_file_safe "$REPO_URL/templates/config-slave-master.json.template" "$SLAVE_TEMPLATE" "config-slave-master.json.template" || true
+    download_file_safe "$REPO_URL/templates/config-wg.json.template" "$WG_TEMPLATE" "config-wg.json.template" || true
     download_file_safe "$REPO_URL/download/gemini.txt" "$DOWNLOAD_DIR/gemini.txt" "gemini.txt" || return 1
     download_file_safe "$REPO_URL/download/chatgpt.txt" "$DOWNLOAD_DIR/chatgpt.txt" "chatgpt.txt" || return 1
     chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh"
@@ -2181,6 +2176,7 @@ cli_disable_list() {
 # ===== Инициализация =====
 
 load_config
+load_wg_config
 rebuild_master_file
 check_and_sync_warp_keys
 
