@@ -14,7 +14,7 @@ SINGBOX_CONF="/etc/sing-box/config.json"
 SINGBOX_TEMPLATE="$WARPER_DIR/config.json.template"
 SLAVE_TEMPLATE="$WARPER_DIR/config-slave-master.json.template"
 SLAVE_MODE_FILE="$WARPER_DIR/slave_mode.conf"
-REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/main"
+REPO_URL="https://raw.githubusercontent.com/Liafanx/AZ-WARP/1.2.1pre"
 LOCAL_VER=$(cat "$WARPER_DIR/version" 2>/dev/null | tr -d '\r\n' || echo "0.0.0")
 CONF_FILE="$WARPER_DIR/warper.conf"
 WARP_SYSTEM_CONF="/etc/wireguard/warp.conf"
@@ -374,8 +374,14 @@ input_wg_manually() {
 
 rebuild_config_wg() {
     load_wg_config
+
     if [ -z "$WG_PRIVATE_KEY" ] || [ -z "$WG_PUBLIC_KEY" ] || [ -z "$WG_ENDPOINT_HOST" ]; then
         echo -e "${RED}Не настроены параметры WG-соединения!${NC}"
+        return 1
+    fi
+
+    if [ -z "$WG_PRESHARED_KEY" ]; then
+        echo -e "${RED}Ошибка: PresharedKey не задан!${NC}"
         return 1
     fi
 
@@ -383,35 +389,20 @@ rebuild_config_wg() {
         download_file_safe "$REPO_URL/templates/config-wg.json.template" "$WG_TEMPLATE" "шаблон WG" || return 1
     fi
 
-    if [ -z "$WG_PRESHARED_KEY" ]; then
-        echo -e "${RED}Ошибка: PresharedKey не задан!${NC}"
-        rm -f "$tmp"
-        return 1
-    fi
-    sed -i "s|__WG_PRESHARED_KEY__|$WG_PRESHARED_KEY|g" "$tmp"
-
-    # Сначала подставляем все значения
     local tmp
     tmp=$(mktemp)
+
     sed \
         -e "s|__SUBNET__|$SUBNET|g" \
         -e "s|__TUN_IP__|$TUN_IP|g" \
         -e "s|__WG_ADDRESS__|$WG_ADDRESS|g" \
         -e "s|__WG_PRIVATE_KEY__|$WG_PRIVATE_KEY|g" \
         -e "s|__WG_PUBLIC_KEY__|$WG_PUBLIC_KEY|g" \
+        -e "s|__WG_PRESHARED_KEY__|$WG_PRESHARED_KEY|g" \
         -e "s|__WG_ENDPOINT_HOST__|$WG_ENDPOINT_HOST|g" \
         -e "s|__WG_ENDPOINT_PORT__|$WG_ENDPOINT_PORT|g" \
         -e "s|__WG_KEEPALIVE__|$WG_KEEPALIVE|g" \
         "$WG_TEMPLATE" > "$tmp"
-
-    # Обработка PresharedKey — если пустой, удаляем строку
-    if [ -z "$WG_PRESHARED_KEY" ]; then
-        sed -i '/"pre_shared_key"/d' "$tmp"
-        # Убираем возможную висящую запятую
-        sed -i ':a;N;$!ba;s/,\n[[:space:]]*"allowed_ips"/\n          "allowed_ips"/g' "$tmp"
-    else
-        sed -i "s|__WG_PRESHARED_KEY__|$WG_PRESHARED_KEY|g" "$tmp"
-    fi
 
     mv "$tmp" "$SINGBOX_CONF"
     chmod 600 "$SINGBOX_CONF"
