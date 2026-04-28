@@ -54,7 +54,7 @@ chmod 600 /etc/sing-box-slave/config.json
 
 ### Режим WARP
 
-Используйте шаблон `config-slave-warp.json.template`, подставив WARP-ключи и пароль Shadowsocks.
+Используйте шаблон `templates/config-slave-warp.json.template`, подставив WARP-ключи и ключ Shadowsocks.
 
 ## Шаг 5. Systemd-служба
 
@@ -69,6 +69,7 @@ User=root
 ExecStart=/usr/bin/sing-box run -c /etc/sing-box-slave/config.json
 Restart=on-failure
 RestartSec=10s
+LimitNOFILE=infinity
 
 [Install]
 WantedBy=multi-user.target
