@@ -988,7 +988,6 @@ while true; do
                 echo -e "${YELLOW}MTU доступен только в режиме WARP.${NC}"
                 sleep 1
             else
-                local current_mtu
                 current_mtu=$(get_mtu)
                 echo -e "\n${CYAN}Текущий MTU: ${current_mtu:-n/a}${NC}"
                 echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
