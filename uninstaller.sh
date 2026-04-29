@@ -82,10 +82,19 @@ rm -f /usr/lib/systemd/system/warper-autopatch.service
 systemctl daemon-reload
 
 echo -e "\n${YELLOW}2. Удаление ядра sing-box и конфигов...${NC}"
-echo -e " - ${CYAN}Удаление бинарных файлов...${NC}"
-rm -f /usr/bin/sing-box /usr/local/bin/sing-box
 echo -e " - ${CYAN}Удаление папки с конфигурацией /etc/sing-box...${NC}"
 rm -rf /etc/sing-box
+
+# Проверяем используется ли sing-box службой warperslave
+if systemctl is-active --quiet sing-box-slave 2>/dev/null; then
+    echo -e " - ${YELLOW}sing-box используется sing-box-slave (warperslave). Бинарник не удаляем.${NC}"
+elif systemctl is-enabled --quiet sing-box-slave 2>/dev/null; then
+    echo -e " - ${YELLOW}sing-box-slave в автозагрузке (warperslave). Бинарник не удаляем.${NC}"
+else
+    echo -e " - ${CYAN}Удаление бинарных файлов sing-box...${NC}"
+    rm -f /usr/bin/sing-box /usr/local/bin/sing-box
+    echo -e " - ${GREEN}Бинарник sing-box удалён.${NC}"
+fi
 
 echo -e "\n${YELLOW}3. Восстановление исходного kresd.conf...${NC}"
 KRESD_CONF="/etc/knot-resolver/kresd.conf"
