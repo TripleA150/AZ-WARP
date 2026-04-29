@@ -137,6 +137,19 @@ else
     echo -e " - ${GREEN}Подсеть $SUBNET отсутствует, изменения маршрутов не требуются.${NC}"
 fi
 
+echo -e "\n${YELLOW}4.5. Удаление пользовательских IP-маршрутов...${NC}"
+if ip link show singbox-tun >/dev/null 2>&1; then
+    ip route show dev singbox-tun 2>/dev/null | awk '{print $1}' | while IFS= read -r route; do
+        [[ "$route" =~ ^198\.20\. ]] && continue
+        [[ "$route" =~ ^169\.254\. ]] && continue
+        [ "$route" = "$SUBNET" ] && continue
+        ip route del "$route" dev singbox-tun 2>/dev/null || true
+    done
+    echo -e " - ${GREEN}IP-маршруты через singbox-tun удалены.${NC}"
+else
+    echo -e " - ${GREEN}Интерфейс singbox-tun не активен.${NC}"
+fi
+
 echo -e "\n${YELLOW}5. Удаление правил firewall...${NC}"
 remove_iptables_rule FORWARD -o singbox-tun
 remove_iptables_rule FORWARD -i singbox-tun
