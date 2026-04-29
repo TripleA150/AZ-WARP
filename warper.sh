@@ -828,16 +828,17 @@ remove_all_ip_routes() {
 
 ip_ranges_in_sync() {
     local desired_tmp applied_tmp
-    desired_tmp=$(mktemp) || desired_tmp="/tmp/desired.$$"
-    applied_tmp=$(mktemp) || applied_tmp="/tmp/applied.$$"
-
-    trap 'rm -f "$desired_tmp" "$applied_tmp" 2>/dev/null || true' RETURN
+    desired_tmp=$(mktemp)
+    applied_tmp=$(mktemp)
 
     extract_ip_ranges > "$desired_tmp"
     get_applied_ip_routes > "$applied_tmp"
 
     cmp -s "$desired_tmp" "$applied_tmp"
-    return $?
+    local result=$?
+
+    rm -f "$desired_tmp" "$applied_tmp"
+    return $result
 }
 
 count_ip_ranges() {
