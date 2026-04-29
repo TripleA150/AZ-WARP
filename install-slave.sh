@@ -16,6 +16,7 @@ SLAVE_CONF="$SLAVE_DIR/slave.conf"
 SINGBOX_SLAVE_CONF="/etc/sing-box-slave/config.json"
 SERVICE_NAME="sing-box-slave"
 DEFAULT_PORT=8444
+WGCF_DIR="$SLAVE_DIR/wgcf"
 
 echo -e "${CYAN}================================================${NC}"
 echo -e " 🚀 Установка WARPERSLAVE (сервер-донор)"
