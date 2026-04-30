@@ -958,10 +958,10 @@ if [ -f "$AZ_INC" ]; then
         echo -e " - ${CYAN}Добавление подсети $SUBNET в include-ips.txt...${NC}"
         echo "$SUBNET" >> "$AZ_INC"
         normalize_include_ips "$AZ_INC"
-        echo -e " - ${YELLOW}⏳ Запуск doall.sh (обновление конфигурации AntiZapret, от 1 до 5 минут)...${NC}"
+        echo -e " - ${YELLOW}⏳ Запуск doall.sh ip (обновление конфигурации AntiZapret, добавление Fake подсети)...${NC}"
         export DEBIAN_FRONTEND=noninteractive
         export SYSTEMD_PAGER=""
-        bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
+        bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1
         echo -e " - ${GREEN}Конфигурация маршрутов успешно обновлена!${NC}"
     else
         normalize_include_ips "$AZ_INC"
