@@ -1077,17 +1077,17 @@ show_menu() {
     echo -e " ${CYAN}4.${NC} 👁️  Показать полный ключ"
     echo -e " ${CYAN}5.${NC} 🔄 Перезапустить службу"
     echo -e " ${CYAN}6.${NC} 📄 Показать логи"
-    echo -e " ${CYAN}8.${NC} ⚙️  Изменить log level"
+    echo -e " ${CYAN}7.${NC} ⚙️  Изменить log level"
     if [ "$SLAVE_MODE" = "warp" ]; then
-    echo -e " ${CYAN}9.${NC} ⚙️  Изменить MTU"
+    echo -e " ${CYAN}8.${NC} ⚙️  Изменить MTU"
     fi
     echo -e " ${CYAN}D.${NC} 🩺 Диагностика"
     echo -e " ${CYAN}S.${NC} 📊 Статус"
     echo -e "${CYAN}------------------------------------------------${NC}"
     if [ "$MENU_UPDATE_AVAILABLE" = true ]; then
-        echo -e " ${YELLOW}7.${NC} ⚡ Обновить до ${GREEN}$MENU_REMOTE_VER${NC}"
+        echo -e " ${YELLOW}9.${NC} ⚡ Обновить до ${GREEN}$MENU_REMOTE_VER${NC}"
     else
-        echo -e " ${CYAN}7.${NC} 🔄 Проверить обновления"
+        echo -e " ${CYAN}9.${NC} 🔄 Проверить обновления"
     fi
     echo -e "${CYAN}------------------------------------------------${NC}"
     echo -e " ${RED}U.${NC} 🗑️  Удалить warperslave"
@@ -1144,6 +1144,39 @@ while true; do
             ;;
         6) show_logs ;;
         7)
+            echo -e "\n${CYAN}Доступные уровни логирования:${NC}"
+            echo -e " ${CYAN}1.${NC} debug"
+            echo -e " ${CYAN}2.${NC} info"
+            echo -e " ${CYAN}3.${NC} warn"
+            echo -e " ${CYAN}4.${NC} error"
+            echo -e " ${CYAN}0.${NC} Отмена"
+            read -r -e -p "Выбор [0-4]: " log_choice
+            case "${log_choice:-}" in
+                1) set_log_level "debug"; sleep 2 ;;
+                2) set_log_level "info"; sleep 2 ;;
+                3) set_log_level "warn"; sleep 2 ;;
+                4) set_log_level "error"; sleep 2 ;;
+                0) ;;
+                *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
+            esac
+            ;;
+        8)
+            load_config
+            if [ "$SLAVE_MODE" != "warp" ]; then
+                echo -e "${YELLOW}MTU доступен только в режиме WARP.${NC}"
+                sleep 1
+            else
+                current_mtu=$(get_mtu)
+                echo -e "\n${CYAN}Текущий MTU: ${current_mtu:-n/a}${NC}"
+                echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
+                read -r -e -p "Введите новый MTU (или Enter для отмены): " new_mtu
+                if [ -n "$new_mtu" ]; then
+                    set_mtu "$new_mtu"
+                    sleep 2
+                fi
+            fi
+            ;;
+        9)
             if [ "$MENU_UPDATE_AVAILABLE" = true ]; then
                 update_warperslave
             else
@@ -1162,40 +1195,7 @@ while true; do
                     sleep 2
                 fi
             fi
-            ;;
-        8)
-            echo -e "\n${CYAN}Доступные уровни логирования:${NC}"
-            echo -e " ${CYAN}1.${NC} debug"
-            echo -e " ${CYAN}2.${NC} info"
-            echo -e " ${CYAN}3.${NC} warn"
-            echo -e " ${CYAN}4.${NC} error"
-            echo -e " ${CYAN}0.${NC} Отмена"
-            read -r -e -p "Выбор [0-4]: " log_choice
-            case "${log_choice:-}" in
-                1) set_log_level "debug"; sleep 2 ;;
-                2) set_log_level "info"; sleep 2 ;;
-                3) set_log_level "warn"; sleep 2 ;;
-                4) set_log_level "error"; sleep 2 ;;
-                0) ;;
-                *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
-            esac
-            ;;
-        9)
-            load_config
-            if [ "$SLAVE_MODE" != "warp" ]; then
-                echo -e "${YELLOW}MTU доступен только в режиме WARP.${NC}"
-                sleep 1
-            else
-                current_mtu=$(get_mtu)
-                echo -e "\n${CYAN}Текущий MTU: ${current_mtu:-n/a}${NC}"
-                echo -e "${YELLOW}Допустимые значения: 1280-1500${NC}"
-                read -r -e -p "Введите новый MTU (или Enter для отмены): " new_mtu
-                if [ -n "$new_mtu" ]; then
-                    set_mtu "$new_mtu"
-                    sleep 2
-                fi
-            fi
-            ;;
+            ;;            
         d|D) doctor_cmd; read -r -p "Нажмите Enter..." ;;
         s|S) status_cmd; read -r -p "Нажмите Enter..." ;;
         u|U) uninstall_cmd ;;
