@@ -36,7 +36,7 @@ IP_ROUTE_TABLE=100
 IP_ROUTE_PRIO=500
 IP_ROUTE_MODE="antizapret"
 AZ_WARPER_INCLUDE_IPS="/root/antizapret/config/warper-include-ips.txt"
-IP_EXPORT_TO_ANTIZAPRET="n"
+IP_EXPORT_TO_ANTIZAPRET="y"
 
 # Динамические: определяются из AntiZapret setup
 AZ_CLIENT_NET=""
