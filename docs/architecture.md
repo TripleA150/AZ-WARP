@@ -1,6 +1,6 @@
 # 🏗 Архитектура WARPER
 
-## Общая схема
+## Общая схема для доменов
 
 ```
 AntiZapret-клиенты → kresd@1 → WARPER-домены → sing-box → WARP / Slave / WG
@@ -22,23 +22,61 @@ FullVPN-клиенты → kresd@2 → всё → встроенный WARP ав
 | warper.conf | /root/warper/ | Настройки (подсеть, TUN IP) |
 | slave_mode.conf | /root/warper/ | Настройки режима (WARP/Slave/WG) |
 | wg_mode.conf | /root/warper/ | Параметры WG-соединения |
+| ip-ranges.txt | /root/warper/ | Желаемые CIDR (редактируется пользователем) |
+| ip-ranges.applied | /root/warper/ |Последнее применённое состояние |
+| warper-include-ips.txt | /root/antizapret/config/ | Экспорт в AntiZapret |
+
+## Маршрутизация по IP-подсетям
+
+| Режим | Механизм |
+|---|---|
+| `antizapret` | `ip rule from AZ_NET lookup 100` + маршруты в `table 100` |
+| `all_vpn` | `ip rule from ALL_NET lookup 100` + маршруты в `table 100` |
+| `all` | маршруты в `main table` + `table 13335` (если есть) |
+
+### Синхронизация
+
+```
+ip-ranges.txt → extract_ip_ranges()
+                    ↓
+              desired state
+                    ↓
+         comm -23 desired vs kernel → add_tmp (что добавить)
+         comm -23 applied vs desired → del_tmp (что удалить)
+                    ↓
+         ip route replace/del → kernel routes
+         ipset add/del → antizapret-forward
+         save → ip-ranges.applied
+                    ↓
+         sync_ip_ranges_to_antizapret() → warper-include-ips.txt → doall.sh ip
+```
 
 ## Режим WARP
 
 ```
-kresd@1 → fake-ip (198.20.0.0/24) → singbox-tun → WireGuard endpoint → Cloudflare WARP
+kresd@1/ip route → fake-ip (198.20.0.0/24) → singbox-tun → WireGuard endpoint → Cloudflare WARP
 ```
 
 ## Режим Slave
 
 ```
-kresd@1 → fake-ip → singbox-tun → Shadowsocks outbound → slave-сервер:8444
+kresd@1/ip route → fake-ip → singbox-tun → Shadowsocks outbound → slave-сервер:8444
 ```
 
 ## Режим WG
 
 ```
-kresd@1 → fake-ip → singbox-tun → WireGuard endpoint → WG-сервер
+kresd@1/ip route → fake-ip → singbox-tun → WireGuard endpoint → WG-сервер
+```
+
+### Интеграция с AntiZapret
+
+```
+При `IP_EXPORT_TO_ANTIZAPRET=y`:
+1. WARPER записывает CIDR в `/root/antizapret/config/warper-include-ips.txt`
+2. `parse.sh` читает `config/*include-ips.txt` — файл подхватывается автоматически
+3. CIDR попадают в `result/route-ips.txt` → клиенты получают маршруты
+4. CIDR попадают в `result/forward-ips.txt` → ipset `antizapret-forward` обновляется штатно
 ```
 
 ## WARPERSLAVE

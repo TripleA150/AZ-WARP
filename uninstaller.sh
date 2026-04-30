@@ -118,23 +118,56 @@ else
     echo -e " - ${GREEN}kresd.conf уже чист.${NC}"
 fi
 
-echo -e "\n${YELLOW}4. Восстановление маршрутов AntiZapret...${NC}"
-AZ_INC="/root/antizapret/config/include-ips.txt"
+echo -e "\n${YELLOW}4. Восстановление маршрутов и очистка...${NC}"
 
+NEED_DOALL=false
+
+# Удаление fake-подсети из include-ips
+AZ_INC="/root/antizapret/config/include-ips.txt"
 if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
     echo -e " - ${CYAN}Удаление подсети $SUBNET из $AZ_INC...${NC}"
     sed -i "\|$SUBNET|d" "$AZ_INC"
     normalize_include_ips "$AZ_INC"
+    NEED_DOALL=true
+fi
 
-    echo -e " - ${CYAN}Запуск doall.sh (обновление конфигурации AntiZapret, подождите)...${NC}"
+# Удаление пользовательских IP-маршрутов
+echo -e " - ${CYAN}Удаление пользовательских IP-маршрутов...${NC}"
+if [ -f "/root/warper/ip-ranges.applied" ]; then
+    while IFS= read -r cidr; do
+        [ -z "$cidr" ] && continue
+        ip route del "$cidr" dev singbox-tun table 100 2>/dev/null || true
+        ip route del "$cidr" dev singbox-tun 2>/dev/null || true
+        ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
+    done < "/root/warper/ip-ranges.applied"
+    rm -f "/root/warper/ip-ranges.applied"
+fi
+for prefix in 10 172; do
+    while ip rule show 2>/dev/null | grep -q "from ${prefix}.29.0.0/16 lookup 100"; do
+        ip rule del from "${prefix}.29.0.0/16" lookup 100 priority 500 2>/dev/null || break
+    done
+    while ip rule show 2>/dev/null | grep -q "from ${prefix}.28.0.0/15 lookup 100"; do
+        ip rule del from "${prefix}.28.0.0/15" lookup 100 priority 500 2>/dev/null || break
+    done
+done
+echo -e " - ${GREEN}IP-маршруты и правила маршрутизации удалены.${NC}"
+
+# Удаление экспорта WARPER в AntiZapret
+if [ -f "/root/antizapret/config/warper-include-ips.txt" ]; then
+    echo -e " - ${CYAN}Удаление warper-include-ips.txt...${NC}"
+    rm -f "/root/antizapret/config/warper-include-ips.txt"
+    NEED_DOALL=true
+fi
+
+# Один вызов doall.sh ip если что-то изменилось
+if [ "$NEED_DOALL" = true ]; then
+    echo -e " - ${CYAN}Обновление маршрутов AntiZapret (doall.sh ip)...${NC}"
     export DEBIAN_FRONTEND=noninteractive
     export SYSTEMD_PAGER=""
-    bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
-
-    echo -e " - ${GREEN}Конфигурация маршрутов успешно восстановлена!${NC}"
+    bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1
+    echo -e " - ${GREEN}Маршруты AntiZapret обновлены.${NC}"
 else
-    normalize_include_ips "$AZ_INC"
-    echo -e " - ${GREEN}Подсеть $SUBNET отсутствует, изменения маршрутов не требуются.${NC}"
+    echo -e " - ${GREEN}Изменения маршрутов AntiZapret не требуются.${NC}"
 fi
 
 echo -e "\n${YELLOW}5. Удаление правил firewall...${NC}"
@@ -148,7 +181,14 @@ rm -f /etc/knot-resolver/warper-domains.txt
 
 if [ "$KEEP_DOMAINS" = true ]; then
     echo -e " - ${CYAN}Очистка папки /root/warper (с сохранением настроек, доменов и ключей WARP)...${NC}"
-    find /root/warper -type f -not -name 'domains.txt' -not -name 'warper.conf' -not -path '*/wgcf/*' -delete 2>/dev/null
+    find /root/warper -type f \
+        -not -name 'domains.txt' \
+        -not -name 'warper.conf' \
+        -not -name 'ip-ranges.txt' \
+        -not -name 'slave_mode.conf' \
+        -not -name 'wg_mode.conf' \
+        -not -path '*/wgcf/*' \
+        -delete 2>/dev/null
     rm -rf /root/warper/download 2>/dev/null
     echo -e " - ${GREEN}Настройки сохранены!${NC}"
 else
