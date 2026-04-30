@@ -1046,7 +1046,7 @@ sync_ip_ranges_to_antizapret() {
         export SYSTEMD_PAGER=""
         if bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1; then
             echo -e "${GREEN}AntiZapret маршруты обновлены.${NC}"
-            echo -e "${YELLOW}Для части клиентов может потребоваться переподключение.${NC}"
+            echo -e "${YELLOW}Для клиентов потребовуется переподключение/добавление подсетей в WG/AWG профили.${NC}"
         else
             echo -e "${RED}Не удалось обновить маршруты AntiZapret через doall.sh ip${NC}"
             return 1
