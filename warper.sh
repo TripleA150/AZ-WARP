@@ -35,6 +35,8 @@ IP_RANGES_FILE="$WARPER_DIR/ip-ranges.txt"
 IP_ROUTE_TABLE=100
 IP_ROUTE_PRIO=500
 IP_ROUTE_MODE="antizapret"
+AZ_WARPER_INCLUDE_IPS="/root/antizapret/config/warper-include-ips.txt"
+IP_EXPORT_TO_ANTIZAPRET="n"
 
 # Динамические: определяются из AntiZapret setup
 AZ_CLIENT_NET=""
@@ -136,6 +138,10 @@ load_config() {
     if [ -n "$value" ]; then
         IP_ROUTE_MODE="$value"
     fi
+    value=$(grep -E '^IP_EXPORT_TO_ANTIZAPRET=' "$CONF_FILE" | tail -n1 | cut -d'=' -f2- | tr -d '"'\''[:space:]')
+    if [ -n "$value" ]; then
+        IP_EXPORT_TO_ANTIZAPRET="$value"
+    fi    
 }
 
 # ===== Slave mode конфигурация =====
@@ -667,19 +673,19 @@ validate_cidr() {
 extract_ip_ranges() {
     local file="${1:-$IP_RANGES_FILE}"
     [ -f "$file" ] || return 0
-    grep -vE '^\s*#|^\s*$' "$file" | while IFS= read -r line; do
+    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$file" | while IFS= read -r line; do
         local trimmed
         trimmed=$(echo "$line" | tr -d '[:space:]')
         if validate_cidr "$trimmed" >/dev/null 2>&1; then
             echo "$trimmed"
         fi
-    done | sort -u -t/ -k1,1V
+    done | LC_ALL=C sort -u
 }
 
 get_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
     [ -f "$applied_file" ] || return 0
-    sort -u -t/ -k1,1V "$applied_file"
+    LC_ALL=C sort -u "$applied_file"
 }
 
 save_applied_ip_routes() {
@@ -731,17 +737,22 @@ sync_ip_ranges() {
 
     detect_client_subnets
 
-    local desired_tmp applied_tmp add_tmp del_tmp
+    local desired_tmp applied_tmp kernel_tmp add_tmp del_tmp
     desired_tmp=$(mktemp)
     applied_tmp=$(mktemp)
+    kernel_tmp=$(mktemp)
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
     extract_ip_ranges > "$desired_tmp"
     get_applied_ip_routes > "$applied_tmp"
+    get_current_kernel_ip_routes > "$kernel_tmp"
 
-    comm -23 "$desired_tmp" "$applied_tmp" > "$add_tmp"
-    comm -13 "$desired_tmp" "$applied_tmp" > "$del_tmp"
+    # Что нужно добавить в ядро: есть в файле, но нет в текущих kernel routes
+    comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
+
+    # Что нужно удалить как WARPER-owned: было применено WARPER, но уже удалено из файла
+    comm -23 "$applied_tmp" "$desired_tmp" > "$del_tmp"
 
     local added=0 removed=0 errors=0
     local source_net
@@ -752,32 +763,51 @@ sync_ip_ranges() {
         use_ipset=true
     fi
 
-    # Удаляем лишние маршруты
+    # Чистим stale routes из "другого режима"
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
         if [ -z "$source_net" ]; then
-            ip route del "$cidr" dev singbox-tun 2>/dev/null && ((removed++)) || ((errors++))
+            # Сейчас режим main table -> удаляем старые WARPER routes из table 100
+            ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null || true
         else
-            ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null && ((removed++)) || ((errors++))
+            # Сейчас режим table 100 -> удаляем старые WARPER routes из main
+            ip route del "$cidr" dev singbox-tun 2>/dev/null || true
         fi
+    done < "$applied_tmp"
+
+    # Удаляем лишние маршруты
+    while IFS= read -r cidr; do
+        [ -z "$cidr" ] && continue
+        ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null || true
+        ip route del "$cidr" dev singbox-tun 2>/dev/null || true
+        ((removed++))
+
         if [ "$use_ipset" = true ]; then
             ipset del antizapret-forward "$cidr" 2>/dev/null || true
         fi
     done < "$del_tmp"
 
-    # Добавляем новые маршруты
+    # Добавляем недостающие маршруты
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
         if [ -z "$source_net" ]; then
-            ip route replace "$cidr" dev singbox-tun 2>/dev/null && ((added++)) || ((errors++))
+            if ip route replace "$cidr" dev singbox-tun 2>/dev/null; then
+                ((added++))
+            else
+                echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
+                ((errors++))
+            fi
         else
-            ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null && ((added++)) || ((errors++))
-        fi
-        if [ "$use_ipset" = true ]; then
-            ipset add antizapret-forward "$cidr" -exist 2>/dev/null || true
+            if ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null; then
+                ((added++))
+            else
+                echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
+                ((errors++))
+            fi
         fi
     done < "$add_tmp"
 
+    # ip rule
     local total
     total=$(wc -l < "$desired_tmp" | tr -d ' ')
 
@@ -788,9 +818,22 @@ sync_ip_ranges() {
         remove_all_ip_rules
     fi
 
+    # ipset: добавляем ВСЕ желаемые CIDR, не только новые
+    # это важно если ipset был перезагружен doall.sh / up.sh
+    if [ "$use_ipset" = true ]; then
+        while IFS= read -r cidr; do
+            [ -z "$cidr" ] && continue
+            ipset add antizapret-forward "$cidr" -exist 2>/dev/null || true
+        done < "$desired_tmp"
+    fi
+
+    # Сохраняем applied-state
     save_applied_ip_routes
 
-    rm -f "$desired_tmp" "$applied_tmp" "$add_tmp" "$del_tmp"
+    # Если включён экспорт в AntiZapret — обновляем его
+    sync_ip_ranges_to_antizapret || true
+
+    rm -f "$desired_tmp" "$applied_tmp" "$kernel_tmp" "$add_tmp" "$del_tmp"
 
     if (( added == 0 && removed == 0 )); then
         echo -e "${GREEN}IP-маршруты синхронизированы (${total} подсетей, изменений нет).${NC}"
@@ -798,6 +841,20 @@ sync_ip_ranges() {
         echo -e "${GREEN}IP-маршруты синхронизированы: +${added} -${removed} (всего ${total}).${NC}"
     fi
 
+    if [ "$use_ipset" = true ]; then
+        echo -e "${CYAN}antizapret-forward синхронизирован.${NC}"
+    fi
+
+    if [ -n "$source_net" ]; then
+        echo -e "${CYAN}Режим: ${IP_ROUTE_MODE} (source: ${source_net})${NC}"
+    else
+        echo -e "${CYAN}Режим: server/main table${NC}"
+    fi
+
+    if (( errors > 0 )); then
+        echo -e "${YELLOW}Ошибок: ${errors}${NC}"
+        return 1
+    fi
     return 0
 }
 
@@ -826,21 +883,6 @@ remove_all_ip_routes() {
     echo -e "${GREEN}Удалено маршрутов: ${removed}${NC}"
 }
 
-ip_ranges_in_sync() {
-    local desired_tmp applied_tmp
-    desired_tmp=$(mktemp)
-    applied_tmp=$(mktemp)
-
-    extract_ip_ranges > "$desired_tmp"
-    get_applied_ip_routes > "$applied_tmp"
-
-    cmp -s "$desired_tmp" "$applied_tmp"
-    local result=$?
-
-    rm -f "$desired_tmp" "$applied_tmp"
-    return $result
-}
-
 count_ip_ranges() {
     extract_ip_ranges | wc -l | tr -d ' '
 }
@@ -849,14 +891,43 @@ count_applied_routes() {
     get_applied_ip_routes | wc -l | tr -d ' '
 }
 
-count_tun_routes() {
-    count_applied_routes
+get_current_kernel_ip_routes() {
+    local source_net
+    source_net=$(get_rule_source_net)
+
+    if [ -z "$source_net" ]; then
+        # Режим "server/main table"
+        ip route show 2>/dev/null | awk '/dev singbox-tun/ {print $1}' | while IFS= read -r cidr; do
+            [ "$cidr" = "$SUBNET" ] && continue
+            echo "$cidr"
+        done | LC_ALL=C sort -u
+    else
+        # Режим policy routing через отдельную таблицу
+        ip route show table "$IP_ROUTE_TABLE" 2>/dev/null | awk '/dev singbox-tun/ {print $1}' | LC_ALL=C sort -u
+    fi
 }
 
 get_current_tun_routes() {
-    local applied_file="$WARPER_DIR/ip-ranges.applied"
-    [ -f "$applied_file" ] || return 0
-    sort -u -t/ -k1,1V "$applied_file"
+    get_current_kernel_ip_routes
+}
+
+count_tun_routes() {
+    get_current_kernel_ip_routes | wc -l | tr -d ' '
+}
+
+ip_ranges_in_sync() {
+    local desired_tmp kernel_tmp
+    desired_tmp=$(mktemp)
+    kernel_tmp=$(mktemp)
+
+    extract_ip_ranges > "$desired_tmp"
+    get_current_kernel_ip_routes > "$kernel_tmp"
+
+    cmp -s "$desired_tmp" "$kernel_tmp"
+    local result=$?
+
+    rm -f "$desired_tmp" "$kernel_tmp"
+    return $result
 }
 
 add_ip_range() {
@@ -900,6 +971,64 @@ remove_ip_range() {
     escaped=$(printf '%s\n' "$cidr" | sed 's/[[\.*^$()+?{|\\\/]/\\&/g')
     sed -i "/^[[:space:]]*${escaped}[[:space:]]*$/d" "$IP_RANGES_FILE"
     echo -e "${GREEN}Подсеть $cidr удалена из списка.${NC}"
+    return 0
+}
+
+resync_ip_routes_if_needed() {
+    if [ "$(count_ip_ranges)" -gt 0 ]; then
+        sync_ip_ranges >/dev/null 2>&1 || true
+    fi
+}
+
+render_antizapret_include_ips_file() {
+    local output_file="$1"
+    {
+        cat << 'EOF'
+# Добавлено WARPER
+# Этот файл автоматически создаётся WARPER.
+# Не редактируйте его вручную, изменения будут перезаписаны.
+#
+# CIDR из этого файла попадают в AntiZapret route-ips через parse.sh
+# потому что AntiZapret читает config/*include-ips.txt
+EOF
+        extract_ip_ranges
+    } > "$output_file"
+}
+
+sync_ip_ranges_to_antizapret() {
+    local changed=0
+    local tmp
+    tmp=$(mktemp)
+
+    if [ "$IP_EXPORT_TO_ANTIZAPRET" = "y" ]; then
+        render_antizapret_include_ips_file "$tmp"
+        if [ ! -f "$AZ_WARPER_INCLUDE_IPS" ] || ! cmp -s "$tmp" "$AZ_WARPER_INCLUDE_IPS"; then
+            mv "$tmp" "$AZ_WARPER_INCLUDE_IPS"
+            changed=1
+        else
+            rm -f "$tmp"
+        fi
+    else
+        rm -f "$tmp"
+        if [ -f "$AZ_WARPER_INCLUDE_IPS" ]; then
+            rm -f "$AZ_WARPER_INCLUDE_IPS"
+            changed=1
+        fi
+    fi
+
+    if [ "$changed" -eq 1 ]; then
+        echo -e "${CYAN}Обновление маршрутов AntiZapret (doall.sh ip)...${NC}"
+        export DEBIAN_FRONTEND=noninteractive
+        export SYSTEMD_PAGER=""
+        if bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1; then
+            echo -e "${GREEN}AntiZapret маршруты обновлены.${NC}"
+            echo -e "${YELLOW}Для части клиентов может потребоваться переподключение.${NC}"
+        else
+            echo -e "${RED}Не удалось обновить маршруты AntiZapret через doall.sh ip${NC}"
+            return 1
+        fi
+    fi
+
     return 0
 }
 
@@ -1047,6 +1176,7 @@ set_log_level() {
     fi
     ensure_iptables_rule FORWARD -o singbox-tun
     ensure_iptables_rule FORWARD -i singbox-tun
+    resync_ip_routes_if_needed    
     systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
     rm -f "$backup"
     echo -e "${GREEN}log level изменён: ${old_level} → ${new_level}${NC}"
@@ -1099,6 +1229,7 @@ set_mtu() {
     fi
     ensure_iptables_rule FORWARD -o singbox-tun
     ensure_iptables_rule FORWARD -i singbox-tun
+    resync_ip_routes_if_needed
     systemctl restart kresd@1 kresd@2 >/dev/null 2>&1 || true
     rm -f "$backup"
     echo -e "${GREEN}MTU изменён: ${old_mtu} → ${new_mtu}${NC}"
@@ -1239,6 +1370,7 @@ restart_singbox_full() {
     ensure_iptables_rule FORWARD -o singbox-tun
     ensure_iptables_rule FORWARD -i singbox-tun
     systemctl restart kresd@1 >/dev/null 2>&1 || true
+    resync_ip_routes_if_needed
     return 0
 }
 
@@ -1659,6 +1791,7 @@ status_cmd() {
     echo "ip routes sync: $ip_sync_stat"
     echo "ip route mode: $IP_ROUTE_MODE"    
     echo "warp keys source: $([ -f "$WARP_SYSTEM_CONF" ] && echo "$WARP_SYSTEM_CONF" || echo "local")"
+    echo "ip export to AntiZapret: $IP_EXPORT_TO_ANTIZAPRET"    
 }
 
 doctor() {
@@ -1763,7 +1896,17 @@ doctor() {
         else
             echo -e " ${CYAN}!${NC} Режим IP-маршрутов: all (без ip rule)"
         fi
-    fi    
+    fi
+    if [ "$IP_EXPORT_TO_ANTIZAPRET" = "y" ]; then
+        if [ -f "$AZ_WARPER_INCLUDE_IPS" ]; then
+            echo -e " ${GREEN}✔${NC} Экспорт WARPER CIDR в AntiZapret включён"
+        else
+            echo -e " ${RED}✘${NC} Экспорт в AntiZapret включён, но файл $AZ_WARPER_INCLUDE_IPS отсутствует"
+            failed=1
+        fi
+    else
+        echo -e " ${CYAN}!${NC} Экспорт WARPER CIDR в AntiZapret выключен"
+    fi
     echo -e "${CYAN}------------------------------------------${NC}"
     if [ "$failed" -eq 0 ]; then
         echo -e "${GREEN}Диагностика завершена: проблем не обнаружено.${NC}"
@@ -2725,14 +2868,21 @@ ip_ranges_menu() {
         case "$IP_ROUTE_MODE" in
             antizapret) mode_label="${GREEN}Только AntiZapret${NC}" ;;
             all_vpn)    mode_label="${CYAN}AntiZapret + FullVPN${NC}" ;;
-            all)        mode_label="${YELLOW}Весь трафик сервера${NC}" ;;
+            all)        mode_label="${YELLOW}Весь трафик сервера(Beta)${NC}" ;;
             *)          mode_label="${RED}неизвестно${NC}" ;;
         esac
         echo -e " ${CYAN}8.${NC} 🎯 Режим применения: [$mode_label]"
+        local export_label
+        if [ "$IP_EXPORT_TO_ANTIZAPRET" = "y" ]; then
+            export_label="${GREEN}ВКЛ${NC}"
+        else
+            export_label="${RED}ВЫКЛ${NC}"
+        fi
+        echo -e " ${CYAN}9.${NC} 📤 Экспорт в AntiZapret route-ips: [$export_label]"
         echo -e " ${CYAN}0.${NC} ↩️  Назад"
         echo -e "${CYAN}================================================${NC}"
 
-        read -r -e -p "Выбор [0-8]: " ipchoice
+        read -r -e -p "Выбор [0-9]: " ipchoice
         case "${ipchoice:-}" in
             1)
                 echo -e "\n${CYAN}Введите подсеть в формате A.B.C.D/M:${NC}"
@@ -2884,7 +3034,24 @@ ip_ranges_menu() {
                     sync_ip_ranges
                 fi
                 read -r -p "Нажмите Enter..."
-                ;;                
+                ;;
+            9)
+                if [ "$IP_EXPORT_TO_ANTIZAPRET" = "y" ]; then
+                    IP_EXPORT_TO_ANTIZAPRET="n"
+                else
+                    IP_EXPORT_TO_ANTIZAPRET="y"
+                fi
+
+                if grep -q '^IP_EXPORT_TO_ANTIZAPRET=' "$CONF_FILE" 2>/dev/null; then
+                    sed -i "s/^IP_EXPORT_TO_ANTIZAPRET=.*/IP_EXPORT_TO_ANTIZAPRET=$IP_EXPORT_TO_ANTIZAPRET/" "$CONF_FILE"
+                else
+                    echo "IP_EXPORT_TO_ANTIZAPRET=$IP_EXPORT_TO_ANTIZAPRET" >> "$CONF_FILE"
+                fi
+
+                echo -e "${GREEN}Экспорт в AntiZapret: $IP_EXPORT_TO_ANTIZAPRET${NC}"
+                sync_ip_ranges_to_antizapret
+                read -r -p "Нажмите Enter..."
+                ;;
             0)
                 return
                 ;;
