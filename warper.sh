@@ -791,34 +791,41 @@ sync_ip_ranges() {
     # Удаляем лишние маршруты
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
+
         ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null || true
         ip route del "$cidr" dev singbox-tun 2>/dev/null || true
         ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
-        ((removed++))
+        ((removed+=1))
 
         if [ "$use_ipset" = true ]; then
             ipset del antizapret-forward "$cidr" 2>/dev/null || true
         fi
     done < "$del_tmp"
-    
+
     # Добавляем недостающие маршруты
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
+
         if [ -z "$source_net" ]; then
             # Режим "all" — добавляем в main table
-            ip route replace "$cidr" dev singbox-tun 2>/dev/null && ((added++)) || {
+            if ip route replace "$cidr" dev singbox-tun 2>/dev/null; then
+                ((added+=1))
+            else
                 echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
-                ((errors++))
-            }
+                ((errors+=1))
+            fi
+
             # Если есть table 13335 (VPN_WARP) — добавляем и туда
             if ip route show table 13335 2>/dev/null | grep -q "dev"; then
                 ip route replace "$cidr" dev singbox-tun table 13335 2>/dev/null || true
             fi
         else
-            ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null && ((added++)) || {
+            if ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null; then
+                ((added+=1))
+            else
                 echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
-                ((errors++))
-            }
+                ((errors+=1))
+            fi
         fi
     done < "$add_tmp"
 
@@ -845,7 +852,7 @@ sync_ip_ranges() {
     # Сохраняем applied-state
     save_applied_ip_routes
 
-    # Если включён экспорт в AntiZapret — обновляем его
+    # Если включён экспорт в AntiZapRet — обновляем его
     sync_ip_ranges_to_antizapret || true
 
     rm -f "$desired_tmp" "$applied_tmp" "$kernel_tmp" "$add_tmp" "$del_tmp"
@@ -870,6 +877,7 @@ sync_ip_ranges() {
         echo -e "${YELLOW}Ошибок: ${errors}${NC}"
         return 1
     fi
+
     return 0
 }
 
@@ -3176,6 +3184,7 @@ settings_menu() {
                             if ! ensure_singbox_running; then sleep 2; break; fi
                             ensure_iptables_rule FORWARD -o singbox-tun
                             ensure_iptables_rule FORWARD -i singbox-tun
+                            resync_ip_routes_if_needed
                             echo -e "${GREEN}Подсеть успешно изменена!${NC}"; sleep 2; break
                         else
                             echo -e "${RED}Некорректная подсеть!${NC}"
