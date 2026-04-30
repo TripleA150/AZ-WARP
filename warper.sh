@@ -3146,7 +3146,12 @@ settings_menu() {
                             sed -i "\|$old_subnet|d" "$AZ_INC" 2>/dev/null
                             grep -qxF "$new_subnet" "$AZ_INC" 2>/dev/null || echo "$new_subnet" >> "$AZ_INC"
                             normalize_include_ips "$AZ_INC"
-                            { echo "SUBNET=$new_subnet"; echo "TUN_IP=$new_tun"; echo "IP_ROUTE_MODE=$IP_ROUTE_MODE"; } > "$CONF_FILE"
+                            {
+                                echo "SUBNET=$new_subnet"
+                                echo "TUN_IP=$new_tun"
+                                echo "IP_ROUTE_MODE=$IP_ROUTE_MODE"
+                                echo "IP_EXPORT_TO_ANTIZAPRET=$IP_EXPORT_TO_ANTIZAPRET"
+                            } > "$CONF_FILE"
                             chmod 600 "$CONF_FILE"
                             echo -e "${YELLOW}⏳ Обновление маршрутов AntiZapret...${NC}"
                             export DEBIAN_FRONTEND=noninteractive SYSTEMD_PAGER=""
