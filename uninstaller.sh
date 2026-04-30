@@ -118,38 +118,30 @@ else
     echo -e " - ${GREEN}kresd.conf уже чист.${NC}"
 fi
 
-echo -e "\n${YELLOW}4. Восстановление маршрутов AntiZapret...${NC}"
-AZ_INC="/root/antizapret/config/include-ips.txt"
+echo -e "\n${YELLOW}4. Восстановление маршрутов и очистка...${NC}"
 
+NEED_DOALL=false
+
+# Удаление fake-подсети из include-ips
+AZ_INC="/root/antizapret/config/include-ips.txt"
 if grep -qF "$SUBNET" "$AZ_INC" 2>/dev/null; then
     echo -e " - ${CYAN}Удаление подсети $SUBNET из $AZ_INC...${NC}"
     sed -i "\|$SUBNET|d" "$AZ_INC"
     normalize_include_ips "$AZ_INC"
-
-    echo -e " - ${CYAN}Запуск doall.sh ip (обновление конфигурации AntiZapret, подождите)...${NC}"
-    export DEBIAN_FRONTEND=noninteractive
-    export SYSTEMD_PAGER=""
-    bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1
-
-    echo -e " - ${GREEN}Конфигурация маршрутов успешно восстановлена!${NC}"
-else
-    normalize_include_ips "$AZ_INC"
-    echo -e " - ${GREEN}Подсеть $SUBNET отсутствует, изменения маршрутов не требуются.${NC}"
+    NEED_DOALL=true
 fi
 
-echo -e "\n${YELLOW}4.5. Удаление пользовательских IP-маршрутов...${NC}"
-
-# Удаляем маршруты из таблицы 100
+# Удаление пользовательских IP-маршрутов
+echo -e " - ${CYAN}Удаление пользовательских IP-маршрутов...${NC}"
 if [ -f "/root/warper/ip-ranges.applied" ]; then
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
         ip route del "$cidr" dev singbox-tun table 100 2>/dev/null || true
         ip route del "$cidr" dev singbox-tun 2>/dev/null || true
+        ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
     done < "/root/warper/ip-ranges.applied"
     rm -f "/root/warper/ip-ranges.applied"
 fi
-
-# Удаляем все ip rule от WARPER
 for prefix in 10 172; do
     while ip rule show 2>/dev/null | grep -q "from ${prefix}.29.0.0/16 lookup 100"; do
         ip rule del from "${prefix}.29.0.0/16" lookup 100 priority 500 2>/dev/null || break
@@ -160,17 +152,22 @@ for prefix in 10 172; do
 done
 echo -e " - ${GREEN}IP-маршруты и правила маршрутизации удалены.${NC}"
 
-echo -e "\n${YELLOW}4.6. Очистка экспорта WARPER в AntiZapret...${NC}"
+# Удаление экспорта WARPER в AntiZapret
 if [ -f "/root/antizapret/config/warper-include-ips.txt" ]; then
+    echo -e " - ${CYAN}Удаление warper-include-ips.txt...${NC}"
     rm -f "/root/antizapret/config/warper-include-ips.txt"
-    echo -e " - ${CYAN}Файл warper-include-ips.txt удалён.${NC}"
+    NEED_DOALL=true
+fi
+
+# Один вызов doall.sh ip если что-то изменилось
+if [ "$NEED_DOALL" = true ]; then
     echo -e " - ${CYAN}Обновление маршрутов AntiZapret (doall.sh ip)...${NC}"
     export DEBIAN_FRONTEND=noninteractive
     export SYSTEMD_PAGER=""
-    bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1 || true
+    bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1
     echo -e " - ${GREEN}Маршруты AntiZapret обновлены.${NC}"
 else
-    echo -e " - ${GREEN}Файл warper-include-ips.txt не найден, пропускаем.${NC}"
+    echo -e " - ${GREEN}Изменения маршрутов AntiZapret не требуются.${NC}"
 fi
 
 echo -e "\n${YELLOW}5. Удаление правил firewall...${NC}"
