@@ -688,9 +688,18 @@ get_applied_ip_routes() {
     LC_ALL=C sort -u "$applied_file"
 }
 
-save_applied_ip_routes() {
-    local applied_file="$WARPER_DIR/ip-ranges.applied"
-    extract_ip_ranges > "$applied_file"
+get_current_kernel_ip_routes() {
+    local source_net
+    source_net=$(get_rule_source_net)
+
+    if [ -z "$source_net" ]; then
+        ip route show dev singbox-tun 2>/dev/null | awk '{print $1}' | while IFS= read -r cidr; do
+            [ "$cidr" = "$SUBNET" ] && continue
+            echo "$cidr"
+        done | LC_ALL=C sort -u
+    else
+        ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null | awk '{print $1}' | LC_ALL=C sort -u
+    fi
 }
 
 get_rule_source_net() {
@@ -744,9 +753,9 @@ sync_ip_ranges() {
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
-    extract_ip_ranges > "$desired_tmp"
-    get_applied_ip_routes > "$applied_tmp"
-    get_current_kernel_ip_routes > "$kernel_tmp"
+    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"
+    get_applied_ip_routes | LC_ALL=C sort -u > "$applied_tmp"
+    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
 
     # Что нужно добавить в ядро: есть в файле, но нет в текущих kernel routes
     comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
@@ -767,11 +776,10 @@ sync_ip_ranges() {
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
         if [ -z "$source_net" ]; then
-            # Сейчас режим main table -> удаляем старые WARPER routes из table 100
             ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null || true
         else
-            # Сейчас режим table 100 -> удаляем старые WARPER routes из main
             ip route del "$cidr" dev singbox-tun 2>/dev/null || true
+            ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
         fi
     done < "$applied_tmp"
 
@@ -780,30 +788,32 @@ sync_ip_ranges() {
         [ -z "$cidr" ] && continue
         ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null || true
         ip route del "$cidr" dev singbox-tun 2>/dev/null || true
+        ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
         ((removed++))
 
         if [ "$use_ipset" = true ]; then
             ipset del antizapret-forward "$cidr" 2>/dev/null || true
         fi
     done < "$del_tmp"
-
+    
     # Добавляем недостающие маршруты
     while IFS= read -r cidr; do
         [ -z "$cidr" ] && continue
         if [ -z "$source_net" ]; then
-            if ip route replace "$cidr" dev singbox-tun 2>/dev/null; then
-                ((added++))
-            else
+            # Режим "all" — добавляем в main table
+            ip route replace "$cidr" dev singbox-tun 2>/dev/null && ((added++)) || {
                 echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
                 ((errors++))
+            }
+            # Если есть table 13335 (VPN_WARP) — добавляем и туда
+            if ip route show table 13335 2>/dev/null | grep -q "dev"; then
+                ip route replace "$cidr" dev singbox-tun table 13335 2>/dev/null || true
             fi
         else
-            if ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null; then
-                ((added++))
-            else
+            ip route replace "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null && ((added++)) || {
                 echo -e "${YELLOW}Не удалось добавить маршрут: $cidr${NC}"
                 ((errors++))
-            fi
+            }
         fi
     done < "$add_tmp"
 
@@ -872,6 +882,7 @@ remove_all_ip_routes() {
             [ -z "$cidr" ] && continue
             ip route del "$cidr" dev singbox-tun table "$IP_ROUTE_TABLE" 2>/dev/null && ((removed++))
             ip route del "$cidr" dev singbox-tun 2>/dev/null && ((removed++))
+            ip route del "$cidr" dev singbox-tun table 13335 2>/dev/null || true
             if [ "$use_ipset" = true ]; then
                 ipset del antizapret-forward "$cidr" 2>/dev/null || true
             fi
@@ -3228,11 +3239,23 @@ singbox_menu() {
                     check_and_sync_warp_keys || continue
                     if ! validate_singbox_config; then sleep 2; continue; fi
                     systemctl start sing-box
-                    if ensure_singbox_running; then echo -e "${GREEN}Запущено.${NC}"; fi
+                    if ensure_singbox_running; then
+                        echo -e "${GREEN}Запущено.${NC}"
+                        resync_ip_routes_if_needed
+                    fi
                     sleep 1
                 fi
                 ;;
-            2) if prompt_confirm; then systemctl stop sing-box; echo -e "${YELLOW}Остановлено.${NC}"; sleep 1; fi ;;
+            2)
+                if prompt_confirm; then
+                    if [ "$(count_ip_ranges)" -gt 0 ]; then
+                        remove_all_ip_routes >/dev/null 2>&1 || true
+                    fi
+                    systemctl stop sing-box
+                    echo -e "${YELLOW}Остановлено.${NC}"
+                    sleep 1
+                fi
+                ;;
             3) if prompt_confirm; then systemctl enable sing-box; echo -e "${GREEN}Добавлено в автозапуск.${NC}"; sleep 1; fi ;;
             4) if prompt_confirm; then systemctl disable sing-box; echo -e "${YELLOW}Убрано из автозапуска.${NC}"; sleep 1; fi ;;
             5) show_logs ;;
