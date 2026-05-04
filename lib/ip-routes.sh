@@ -46,16 +46,20 @@ get_current_kernel_ip_routes() {
     local source_net
     source_net=$(get_rule_source_net)
 
+    local raw_routes
     if [ -z "$source_net" ]; then
-        ip route show dev singbox-tun 2>/dev/null \
-            | awk '{print $1}' \
-            | grep -v "^${SUBNET}$" \
-            | LC_ALL=C sort -u
+        raw_routes=$(ip route show dev singbox-tun 2>/dev/null | awk '{print $1}')
     else
-        ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null \
-            | awk '{print $1}' \
-            | LC_ALL=C sort -u
+        raw_routes=$(ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null | awk '{print $1}')
     fi
+
+    echo "$raw_routes" | while IFS= read -r cidr; do
+        [ -z "$cidr" ] && continue
+        [ "$cidr" = "$SUBNET" ] && continue
+        # Ядро Linux отбрасывает /32 при отображении — добавляем обратно
+        [[ "$cidr" =~ / ]] || cidr="${cidr}/32"
+        echo "$cidr"
+    done | LC_ALL=C sort -u
 }
 
 # Алиас для get_current_kernel_ip_routes.
