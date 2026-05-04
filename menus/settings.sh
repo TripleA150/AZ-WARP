@@ -311,6 +311,13 @@ settings_menu() {
         if [ "$CURRENT_OUTBOUND_MODE" = "warp" ]; then
             echo -e " ${CYAN}8.${NC} Управление WARP-ключами"
         fi
+        local FULLVPN_STAT
+        if grep -q "FULLVPN-WARP-START" "$KRESD_CONF" 2>/dev/null; then
+            FULLVPN_STAT="${GREEN}ВКЛ${NC}"
+        else
+            FULLVPN_STAT="${RED}ВЫКЛ${NC}"
+        fi
+        echo -e " ${CYAN}9.${NC} FullVPN WARP-резолвинг:      [$FULLVPN_STAT]"        
         echo -e " ${CYAN}0.${NC} Назад в главное меню"
         echo -e "${CYAN}==========================================${NC}"
 
@@ -441,6 +448,30 @@ settings_menu() {
 
             # ── WARP-ключи ────────────────────────────────────────────────
             8) manage_warp_keys ;;
+
+            # ── Патч Kresd для full vpn конфигов ────────────────────────────────────────────────
+            9)
+                if check_vpn_warp; then
+                    echo -e "${RED}VPN_WARP=y — нельзя включить FullVPN WARP-резолвинг!${NC}"
+                    sleep 2
+                elif grep -q "FULLVPN-WARP-START" "$KRESD_CONF" 2>/dev/null; then
+                    if prompt_confirm; then
+                        unpatch_kresd_fullvpn
+                        FULLVPN_WARP_RESOLVE="n"
+                        save_main_config
+                        echo -e "${YELLOW}FullVPN WARP-резолвинг отключён.${NC}"
+                    fi
+                else
+                    if prompt_confirm; then
+                        if patch_kresd_fullvpn; then
+                            FULLVPN_WARP_RESOLVE="y"
+                            save_main_config
+                            echo -e "${GREEN}FullVPN WARP-резолвинг включён!${NC}"
+                        fi
+                    fi
+                fi
+                sleep 1
+                ;;
 
             # ── Назад ─────────────────────────────────────────────────────
             0) return ;;
