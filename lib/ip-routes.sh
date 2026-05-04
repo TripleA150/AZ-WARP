@@ -9,20 +9,11 @@
 # ===== Чтение и запись =====
 
 # Читает валидные CIDR из ip-ranges.txt (без комментариев и пустых строк).
-# Сортирует лексикографически для совместимости с comm.
 extract_ip_ranges() {
     local file="${1:-$IP_RANGES_FILE}"
     [ -f "$file" ] || return 0
-    # удаляем \r (windows line endings), затем убираем комментарии и пустые строки
-    sed 's/\r$//' "$file" | grep -vE '^\s*#|^\s*$' | while IFS= read -r line; do
-        local trimmed
-        trimmed=$(echo "$line" | tr -d '[:space:]')
-        # пропускаем строки, ставшие пустыми после очистки
-        [ -z "$trimmed" ] && continue
-        if validate_cidr "$trimmed" >/dev/null 2>&1; then
-            echo "$trimmed"
-        fi
-    done | LC_ALL=C sort -u
+    # Удаляем все символы, кроме цифр, точки, слеша и перевода строки
+    tr -cd '0-9./\n' < "$file" | grep -oP '\d+\.\d+\.\d+\.\d+/\d+' | LC_ALL=C sort -u
 }
 
 # Читает последнее применённое состояние маршрутов из ip-ranges.applied.
@@ -30,7 +21,7 @@ extract_ip_ranges() {
 get_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
     [ -f "$applied_file" ] || return 0
-    LC_ALL=C sort -u "$applied_file"
+    tr -cd '0-9./\n' < "$applied_file" | grep -oP '\d+\.\d+\.\d+\.\d+/\d+' | LC_ALL=C sort -u
 }
 
 # Сохраняет текущее желаемое состояние в ip-ranges.applied.
@@ -51,15 +42,12 @@ get_current_kernel_ip_routes() {
     source_net=$(get_rule_source_net)
 
     if [ -z "$source_net" ]; then
-        # Режим "all/server" — main table
-        ip route show dev singbox-tun 2>/dev/null | awk '{print $1}' | while IFS= read -r cidr; do
+        ip route show dev singbox-tun 2>/dev/null | awk '{print $1}' | grep -oP '\d+\.\d+\.\d+\.\d+/\d+' | LC_ALL=C sort -u | while IFS= read -r cidr; do
             [ "$cidr" = "$SUBNET" ] && continue
             echo "$cidr"
-        done | LC_ALL=C sort -u
+        done
     else
-        # Режим policy routing — отдельная таблица
-        ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null \
-            | awk '{print $1}' | LC_ALL=C sort -u
+        ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null | awk '{print $1}' | grep -oP '\d+\.\d+\.\d+\.\d+/\d+' | LC_ALL=C sort -u
     fi
 }
 
@@ -233,20 +221,15 @@ sync_ip_ranges() {
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
-    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"   # гарантированная сортировка
-    get_applied_ip_routes | LC_ALL=C sort -u > "$applied_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    extract_ip_routes > "$desired_tmp"
+    get_applied_ip_routes > "$applied_tmp"
+    get_current_kernel_ip_routes > "$kernel_tmp"
 
-    # Дополнительная пересортировка «на месте» для абсолютной уверенности
-    LC_ALL=C sort -u -o "$desired_tmp" "$desired_tmp"
-    LC_ALL=C sort -u -o "$applied_tmp" "$applied_tmp"
-    LC_ALL=C sort -u -o "$kernel_tmp" "$kernel_tmp"
+    # Что добавить: есть в desired, но нет в kernel (без сортировки)
+    grep -Fxv -f "$kernel_tmp" "$desired_tmp" > "$add_tmp" || true
 
-    # Что добавить: есть в файле, нет в kernel
-    comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
-
-    # Что удалить: было применено WARPER, но уже удалено из файла
-    comm -23 "$applied_tmp" "$desired_tmp" > "$del_tmp"
+    # Что удалить: есть в applied, но нет в desired
+    grep -Fxv -f "$desired_tmp" "$applied_tmp" > "$del_tmp" || true
 
     local added=0 removed=0 errors=0
     local source_net
