@@ -466,7 +466,8 @@ doctor() {
         if [ -f "$AZ_WARPER_INCLUDE_IPS" ]; then
             echo -e " ${GREEN}✔${NC} Экспорт WARPER CIDR в AntiZapret включён"
         else
-            echo -e " ${RED}✘${NC} Экспорт в AntiZapret включён, но файл $AZ_WARPER_INCLUDE_IPS отсутствует"
+            echo -e " ${YELLOW}!${NC} Экспорт в AntiZapret включён, но файл $AZ_WARPER_INCLUDE_IPS отсутствует"
+            echo -e " Это нормально если не пользуетесь модулем IP подсети в Warper"
             failed=1
         fi
     else
