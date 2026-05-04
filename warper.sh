@@ -75,8 +75,32 @@ trap 'release_lock' EXIT
 acquire_lock
 
 # ===== Подключение модулей =====
+# ===== Подключение модулей =====
 WARPER_LIB="$WARPER_DIR/lib"
 WARPER_MENUS="$WARPER_DIR/menus"
+
+# Автоматическое восстановление модулей после обновления со старой версии
+if [ ! -d "$WARPER_LIB" ] || [ ! -f "$WARPER_LIB/utils.sh" ]; then
+    echo -e "${YELLOW}Обнаружена старая версия WARPER. Загружаю модули...${NC}"
+    mkdir -p "$WARPER_LIB" "$WARPER_MENUS"
+
+    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update; do
+        if ! download_file_safe "$REPO_URL/lib/${_libfile}.sh" "$WARPER_LIB/${_libfile}.sh" "lib/${_libfile}.sh"; then
+            echo -e "${RED}Не удалось загрузить модуль lib/${_libfile}.sh. Обновление не завершено.${NC}" >&2
+            exit 1
+        fi
+    done
+
+    for _menufile in main settings singbox-menu ip-menu; do
+        if ! download_file_safe "$REPO_URL/menus/${_menufile}.sh" "$WARPER_MENUS/${_menufile}.sh" "menus/${_menufile}.sh"; then
+            echo -e "${RED}Не удалось загрузить модуль menus/${_menufile}.sh. Обновление не завершено.${NC}" >&2
+            exit 1
+        fi
+    done
+
+    echo -e "${GREEN}Модули успешно загружены. Перезапустите WARPER.${NC}"
+    exit 0
+fi
 
 for _lib in \
     "$WARPER_LIB/utils.sh" \
