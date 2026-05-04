@@ -166,6 +166,7 @@ toggle_warper() {
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+    
     check_and_sync_warp_keys || return
 
     local action="ВКЛЮЧИТЬ"
@@ -234,6 +235,13 @@ toggle_warper() {
         fi
         sleep 2
     fi
+    # Автоотключение FullVPN WARP-резолвинга при включённом VPN_WARP
+    if [ "$FULLVPN_WARP_RESOLVE" = "y" ] && check_vpn_warp; then
+        echo -e "${RED}FullVPN WARP-резолвинг несовместим с VPN_WARP=y. Автоматическое отключение.${NC}"
+        unpatch_kresd_fullvpn
+        FULLVPN_WARP_RESOLVE="n"
+        save_main_config
+    fi    
 }
 
 # ===== Версионирование =====
