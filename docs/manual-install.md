@@ -10,7 +10,7 @@ apt-get install -y curl wget jq iptables nano
 ## Шаг 2. Установка sing-box
 
 ```bash
-curl -fsSL https://sing-box.app/install.sh | bash -s -- --version 1.13.5
+curl -fsSL https://sing-box.app/install.sh | bash -s -- --version 1.13.11
 ```
 
 ## Шаг 3. Получение ключей WARP
@@ -93,6 +93,8 @@ chmod 600 /root/warper/slave_mode.conf
 ```
 
 Загрузите из репозитория: `warper.sh`, `uninstaller.sh`, `version`, шаблоны из `templates/`.
+Проект состоит из главного скрипта `warper.sh` и набора модулей в папках `lib/` и `menus/`.  
+Скопируйте их в соответствующие директории, либо используйте автоматический установщик.
 
 ```bash
 chmod +x /root/warper/warper.sh

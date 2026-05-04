@@ -377,6 +377,7 @@ done
     echo "TUN_IP=$TUN_IP"
     echo "IP_ROUTE_MODE=antizapret"
     echo "IP_EXPORT_TO_ANTIZAPRET=y"
+    echo "FULLVPN_WARP_RESOLVE=n"
 } > "$CONF_FILE"
 chmod 600 "$CONF_FILE"
 echo -e "${GREEN}✔ Подсеть $SUBNET установлена.${NC}"
@@ -1001,6 +1002,20 @@ download_file "$REPO_URL/templates/config-slave-master.json.template" "$WARPER_D
 download_file "$REPO_URL/templates/config.json.template" "$SINGBOX_TEMPLATE" "шаблон config.json (WARP)" || exit 1
 download_file "$REPO_URL/templates/config-wg.json.template" "$WARPER_DIR/config-wg.json.template" "шаблон WG" || exit 1
 
+# Скачиваем модули lib/
+echo -e " - ${CYAN}Скачивание модулей lib/...${NC}"
+mkdir -p "$WARPER_DIR/lib"
+for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update; do
+    download_file "$REPO_URL/lib/${_libfile}.sh" "$WARPER_DIR/lib/${_libfile}.sh" "lib/${_libfile}.sh" || exit 1
+done
+
+# Скачиваем модули menus/
+echo -e " - ${CYAN}Скачивание модулей menus/...${NC}"
+mkdir -p "$WARPER_DIR/menus"
+for _menufile in main settings singbox-menu ip-menu; do
+    download_file "$REPO_URL/menus/${_menufile}.sh" "$WARPER_DIR/menus/${_menufile}.sh" "menus/${_menufile}.sh" || exit 1
+done
+
 # Создаём ip-ranges.txt если не существует
 if [ ! -f "$WARPER_DIR/ip-ranges.txt" ]; then
 cat << 'IPEOF' > "$WARPER_DIR/ip-ranges.txt"
@@ -1048,6 +1063,9 @@ fi
 echo -e "\n${GREEN}================================================${NC}"
 echo -e " 🎉 УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА!"
 echo -e "${GREEN}================================================${NC}"
+echo -e "После установки клиентам нужно переподключиться по OpenVPN." 
+echo -e "Если вы используете AWG/WG — обновите конфиг с учётом новой fake-подсети."
+echo -e "Аналогично для роутеров, где маршруты прописываются вручную."
 
 if [ "$ANTIZAPRET_WARP_ENABLED" = true ]; then
     echo -e "${RED}⚠️  WARPER установлен, но НЕ АКТИВЕН из-за ANTIZAPRET_WARP=y${NC}"
