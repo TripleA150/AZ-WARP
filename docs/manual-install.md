@@ -93,6 +93,8 @@ chmod 600 /root/warper/slave_mode.conf
 ```
 
 Загрузите из репозитория: `warper.sh`, `uninstaller.sh`, `version`, шаблоны из `templates/`.
+Проект состоит из главного скрипта `warper.sh` и набора модулей в папках `lib/` и `menus/`.  
+Скопируйте их в соответствующие директории, либо используйте автоматический установщик.
 
 ```bash
 chmod +x /root/warper/warper.sh
