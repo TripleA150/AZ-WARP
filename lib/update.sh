@@ -27,6 +27,16 @@ rollback_warper_update() {
     restore_if_exists "$backupdir/config.json" "$SINGBOX_CONF"
     restore_if_exists "$backupdir/domains.txt" "$MASTER_FILE"
 
+    # Откатываем модули
+    if [ -d "$backupdir/lib" ]; then
+        rm -rf "$WARPER_DIR/lib"
+        cp -a "$backupdir/lib" "$WARPER_DIR/lib"
+    fi
+    if [ -d "$backupdir/menus" ]; then
+        rm -rf "$WARPER_DIR/menus"
+        cp -a "$backupdir/menus" "$WARPER_DIR/menus"
+    fi
+
     chmod +x "$WARPER_DIR/warper.sh" "$WARPER_DIR/uninstaller.sh" 2>/dev/null || true
     ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -93,11 +103,33 @@ update_warper() {
     download_file_safe "$REPO_URL/download/chatgpt.txt" \
         "$tmpdir/chatgpt.txt" "chatgpt.txt" || { rm -rf "$tmpdir" "$backupdir"; return 1; }
 
+    # Модули lib/
+    mkdir -p "$tmpdir/lib"
+    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update; do
+        download_file_safe "$REPO_URL/lib/${_libfile}.sh" \
+            "$tmpdir/lib/${_libfile}.sh" "lib/${_libfile}.sh" || \
+            { rm -rf "$tmpdir" "$backupdir"; return 1; }
+    done
+
+    # Модули menus/
+    mkdir -p "$tmpdir/menus"
+    for _menufile in main settings singbox-menu ip-menu; do
+        download_file_safe "$REPO_URL/menus/${_menufile}.sh" \
+            "$tmpdir/menus/${_menufile}.sh" "menus/${_menufile}.sh" || \
+            { rm -rf "$tmpdir" "$backupdir"; return 1; }
+    done
+
     # ===== Проверка синтаксиса bash =====
     syntax_check_bash_file "$tmpdir/warper.sh" "warper.sh" || \
         { rm -rf "$tmpdir" "$backupdir"; return 1; }
     syntax_check_bash_file "$tmpdir/uninstaller.sh" "uninstaller.sh" || \
         { rm -rf "$tmpdir" "$backupdir"; return 1; }
+
+    # Проверяем синтаксис модулей
+    for _libfile in "$tmpdir"/lib/*.sh "$tmpdir"/menus/*.sh; do
+        syntax_check_bash_file "$_libfile" "$(basename "$_libfile")" || \
+            { rm -rf "$tmpdir" "$backupdir"; return 1; }
+    done
 
     # ===== Проверка шаблонов =====
     validate_template_marker "$tmpdir/config.json.template" \
@@ -136,6 +168,13 @@ update_warper() {
         "$backupdir/warper-autopatch.service"
     backup_if_exists "$SINGBOX_CONF"  "$backupdir/config.json"
     backup_if_exists "$MASTER_FILE"   "$backupdir/domains.txt"
+    # Backup модулей
+    if [ -d "$WARPER_DIR/lib" ]; then
+        cp -a "$WARPER_DIR/lib" "$backupdir/lib"
+    fi
+    if [ -d "$WARPER_DIR/menus" ]; then
+        cp -a "$WARPER_DIR/menus" "$backupdir/menus"
+    fi
 
     if systemctl is-active --quiet sing-box; then
         had_singbox=true
@@ -185,6 +224,25 @@ update_warper() {
         echo -e "${RED}Ошибка установки warper-autopatch.service, откат.${NC}"
         rollback_warper_update "$backupdir"; rm -rf "$tmpdir" "$backupdir"; return 1
     }
+
+    # Устанавливаем модули lib/ и menus/
+    mkdir -p "$WARPER_DIR/lib" "$WARPER_DIR/menus"
+    for _libfile in "$tmpdir"/lib/*.sh; do
+        install -m 644 "$_libfile" "$WARPER_DIR/lib/$(basename "$_libfile")" || {
+            echo -e "${RED}Ошибка установки $(basename "$_libfile"), откат.${NC}"
+            rollback_warper_update "$backupdir"
+            rm -rf "$tmpdir" "$backupdir"
+            return 1
+        }
+    done
+    for _menufile in "$tmpdir"/menus/*.sh; do
+        install -m 644 "$_menufile" "$WARPER_DIR/menus/$(basename "$_menufile")" || {
+            echo -e "${RED}Ошибка установки $(basename "$_menufile"), откат.${NC}"
+            rollback_warper_update "$backupdir"
+            rm -rf "$tmpdir" "$backupdir"
+            return 1
+        }
+    done
 
     ln -sf "$WARPER_DIR/warper.sh" /usr/local/bin/warper
 
