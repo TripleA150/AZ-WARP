@@ -221,7 +221,7 @@ sync_ip_ranges() {
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
-    extract_ip_routes > "$desired_tmp"
+    extract_ip_ranges > "$desired_tmp"
     get_applied_ip_routes > "$applied_tmp"
     get_current_kernel_ip_routes > "$kernel_tmp"
 
