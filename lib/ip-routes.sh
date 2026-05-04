@@ -19,7 +19,7 @@ extract_ip_ranges() {
         if validate_cidr "$trimmed" >/dev/null 2>&1; then
             echo "$trimmed"
         fi
-    done | LC_ALL=C sort -u
+    done
 }
 
 # Читает последнее применённое состояние маршрутов из ip-ranges.applied.
@@ -27,14 +27,14 @@ extract_ip_ranges() {
 get_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
     [ -f "$applied_file" ] || return 0
-    LC_ALL=C sort "$applied_file"
+    cat "$applied_file"
 }
 
 # Сохраняет текущее желаемое состояние в ip-ranges.applied.
 # Вызывается после успешной синхронизации.
 save_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
-    extract_ip_ranges | LC_ALL=C sort > "$applied_file"
+    extract_ip_ranges | LC_ALL=C sort -u > "$applied_file"
 }
 
 # ===== Чтение реальных маршрутов ядра =====
@@ -59,7 +59,7 @@ get_current_kernel_ip_routes() {
         # Ядро Linux отбрасывает /32 при отображении — добавляем обратно
         [[ "$cidr" =~ / ]] || cidr="${cidr}/32"
         echo "$cidr"
-    done | LC_ALL=C sort -u
+    done
 }
 
 # Алиас для get_current_kernel_ip_routes.
@@ -72,12 +72,12 @@ get_current_tun_routes() {
 
 # Возвращает количество подсетей в ip-ranges.txt
 count_ip_ranges() {
-    extract_ip_ranges | wc -l | tr -d ' '
+    extract_ip_ranges | LC_ALL=C sort -u | wc -l | tr -d ' '
 }
 
 # Возвращает количество подсетей в ip-ranges.applied
 count_applied_routes() {
-    get_applied_ip_routes | wc -l | tr -d ' '
+    get_applied_ip_routes | LC_ALL=C sort -u | wc -l | tr -d ' '
 }
 
 # Алиас для count_applied_routes.
@@ -95,9 +95,8 @@ ip_ranges_in_sync() {
     desired_tmp=$(mktemp)
     kernel_tmp=$(mktemp)
 
-    # Принудительно сортируем оба источника одинаково
-    extract_ip_ranges | LC_ALL=C sort > "$desired_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort > "$kernel_tmp"
+    extract_ip_ranges            | LC_ALL=C sort -u > "$desired_tmp"
+    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
 
     cmp -s "$desired_tmp" "$kernel_tmp"
     local result=$?
@@ -230,9 +229,9 @@ sync_ip_ranges() {
     del_tmp=$(mktemp)
 
     # Принудительная сортировка всех трёх источников одним методом
-    extract_ip_ranges        | LC_ALL=C sort > "$desired_tmp"
-    get_applied_ip_routes    | LC_ALL=C sort > "$applied_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort > "$kernel_tmp"
+    extract_ip_ranges            | LC_ALL=C sort -u > "$desired_tmp"
+    get_applied_ip_routes        | LC_ALL=C sort -u > "$applied_tmp"
+    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
 
     # Что добавить: есть в файле, нет в kernel
     comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
