@@ -167,6 +167,18 @@ show_main_menu() {
         echo -e " 🔐 ${CYAN}SS-ключ:${NC}       ${YELLOW}${SLAVE_PASSWORD:0:8}...${NC}"
     fi
 
+    local fullvpn_resolve_display
+    if [ "$FULLVPN_WARP_RESOLVE" = "y" ]; then
+        if check_vpn_warp; then
+            fullvpn_resolve_display="${RED}ВКЛ (конфликт VPN_WARP=y)${NC}"
+        else
+            fullvpn_resolve_display="${GREEN}ВКЛ${NC}"
+        fi
+    else
+        fullvpn_resolve_display="${RED}ВЫКЛ${NC}"
+    fi
+    echo -e " 🌐 ${CYAN}FullVPN WARP:${NC}  $fullvpn_resolve_display"    
+
     # Предупреждение о правилах up.sh
     if needs_down_sh; then
         echo -e ""
