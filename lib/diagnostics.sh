@@ -156,16 +156,26 @@ prompt_confirm() {
 # При включении: запускает sing-box, патчит kresd, синхронизирует IP-маршруты.
 # При выключении: останавливает sing-box, удаляет патч, удаляет IP-маршруты.
 toggle_warper() {
+
     if check_antizapret_warp; then
         show_antizapret_warp_warning
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+    
     if needs_down_sh; then
         show_down_sh_warning
         read -r -p "Нажмите Enter для продолжения..."
         return
     fi
+
+    # Автоотключение FullVPN WARP-резолвинга при включённом VPN_WARP
+    if [ "$FULLVPN_WARP_RESOLVE" = "y" ] && check_vpn_warp; then
+        echo -e "${RED}FullVPN WARP-резолвинг несовместим с VPN_WARP=y. Автоматическое отключение.${NC}"
+        unpatch_kresd_fullvpn
+        FULLVPN_WARP_RESOLVE="n"
+        save_main_config
+    fi   
     
     check_and_sync_warp_keys || return
 
@@ -234,14 +244,7 @@ toggle_warper() {
             echo -e "${GREEN}WARPER успешно включен!${NC}"
         fi
         sleep 2
-    fi
-    # Автоотключение FullVPN WARP-резолвинга при включённом VPN_WARP
-    if [ "$FULLVPN_WARP_RESOLVE" = "y" ] && check_vpn_warp; then
-        echo -e "${RED}FullVPN WARP-резолвинг несовместим с VPN_WARP=y. Автоматическое отключение.${NC}"
-        unpatch_kresd_fullvpn
-        FULLVPN_WARP_RESOLVE="n"
-        save_main_config
-    fi    
+    fi 
 }
 
 # ===== Версионирование =====
