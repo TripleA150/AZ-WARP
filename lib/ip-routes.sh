@@ -34,7 +34,7 @@ get_applied_ip_routes() {
 # Вызывается после успешной синхронизации.
 save_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
-    extract_ip_ranges | LC_ALL=C sort -u > "$applied_file"
+    extract_ip_ranges > "$applied_file"
 }
 
 # ===== Чтение реальных маршрутов ядра =====
@@ -92,9 +92,9 @@ ip_ranges_in_sync() {
     desired_tmp=$(mktemp)
     kernel_tmp=$(mktemp)
 
-    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
-
+    extract_ip_ranges > "$desired_tmp"
+    get_current_kernel_ip_routes > "$kernel_tmp"
+    
     cmp -s "$desired_tmp" "$kernel_tmp"
     local result=$?
 
@@ -225,9 +225,9 @@ sync_ip_ranges() {
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
-    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"
-    get_applied_ip_routes | LC_ALL=C sort -u > "$applied_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    extract_ip_ranges > "$desired_tmp"
+    get_applied_ip_routes > "$applied_tmp"
+    get_current_kernel_ip_routes > "$kernel_tmp"
 
     # Что добавить: есть в файле, нет в kernel
     comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
