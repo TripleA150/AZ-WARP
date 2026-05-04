@@ -39,6 +39,7 @@ NC='\033[0m'
 # ===== Глобальные переменные состояния =====
 SUBNET="198.20.0.0/24"
 TUN_IP="198.20.0.1/24"
+FULLVPN_WARP_RESOLVE="n"           # включать ли WARP-резолвинг для FullVPN
 CURRENT_OUTBOUND_MODE="warp"
 SLAVE_SERVER=""
 SLAVE_PORT="8444"
