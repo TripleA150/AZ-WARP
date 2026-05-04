@@ -193,9 +193,25 @@ toggle_warper() {
                 echo -e "${RED}Ошибка при удалении патча DNS.${NC}"
                 sleep 2; return
             }
+
+            # Удаляем IP-маршруты и ip rule
             if [ "$(count_ip_ranges)" -gt 0 ]; then
                 remove_all_ip_routes || true
             fi
+
+            # Удаляем экспорт в AntiZapret и обновляем маршруты
+            if [ -f "$AZ_WARPER_INCLUDE_IPS" ]; then
+                echo -e "${CYAN}Удаление экспорта WARPER из AntiZapret...${NC}"
+                rm -f "$AZ_WARPER_INCLUDE_IPS"
+                export DEBIAN_FRONTEND=noninteractive
+                export SYSTEMD_PAGER=""
+                if bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1; then
+                    echo -e "${GREEN}Маршруты AntiZapret обновлены.${NC}"
+                else
+                    echo -e "${YELLOW}Предупреждение: не удалось обновить маршруты AntiZapret.${NC}"
+                fi
+            fi
+
             echo -e "${GREEN}WARPER успешно отключен!${NC}"
         else
             echo -e "${YELLOW}Включение WARPER...${NC}"
