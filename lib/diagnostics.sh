@@ -330,6 +330,17 @@ status_cmd() {
     echo "sing-box log level: $log_level"
     echo "sing-box MTU: $mtu"
     echo "kresd patch: $kr_stat"
+    local fullvpn_resolve_status
+    if [ "$FULLVPN_WARP_RESOLVE" = "y" ]; then
+        if check_vpn_warp; then
+            fullvpn_resolve_status="enabled (CONFLICT: VPN_WARP=y)"
+        else
+            fullvpn_resolve_status="enabled"
+        fi
+    else
+        fullvpn_resolve_status="disabled"
+    fi
+    echo "FullVPN WARP resolve: $fullvpn_resolve_status"
     echo "domains: $dom_stat"
     echo "subnet in AntiZapret: $az_stat"
     echo "autopatch: $ap_stat"
@@ -387,6 +398,12 @@ doctor() {
     else
         echo -e " ${GREEN}✔${NC} Правила от up.sh неактивны"
     fi
+    
+    # Проверка конфликта FullVPN WARP-резолвинга
+    if [ "$FULLVPN_WARP_RESOLVE" = "y" ] && check_vpn_warp; then
+        echo -e " ${RED}✘${NC} FullVPN WARP resolve: CONFLICT (VPN_WARP=y включён)"
+        failed=1
+    fi    
 
     # Режим маршрутизации
     load_wg_config
