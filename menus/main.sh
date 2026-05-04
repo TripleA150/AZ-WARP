@@ -228,7 +228,7 @@ show_main_menu() {
         echo -e " ${CYAN}I.${NC} 🌐 Управление IP-подсетями"
     fi
 
-    echo -e " ${CYAN}9.${NC} 🛠️  Настройки"
+    echo -e " ${CYAN}9.${NC} 🛠️  Настройки (Автопатч, Подсеть, Списки, Loglevel, MTU, Режим и т.д...)"
 
     if [ "$UPDATE_AVAILABLE" = true ]; then
         echo -e " ${YELLOW}10.${NC} ⚡ Обновить WARPER до ${GREEN}$REMOTE_VER${NC}"
