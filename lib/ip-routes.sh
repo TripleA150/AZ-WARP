@@ -27,14 +27,14 @@ extract_ip_ranges() {
 get_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
     [ -f "$applied_file" ] || return 0
-    LC_ALL=C sort -u "$applied_file"
+    LC_ALL=C sort "$applied_file"
 }
 
 # Сохраняет текущее желаемое состояние в ip-ranges.applied.
 # Вызывается после успешной синхронизации.
 save_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
-    extract_ip_ranges | LC_ALL=C sort -u > "$applied_file"
+    extract_ip_ranges | LC_ALL=C sort > "$applied_file"
 }
 
 # ===== Чтение реальных маршрутов ядра =====
@@ -47,15 +47,14 @@ get_current_kernel_ip_routes() {
     source_net=$(get_rule_source_net)
 
     if [ -z "$source_net" ]; then
-        # Режим "all/server" — main table
-        ip route show dev singbox-tun 2>/dev/null | awk '{print $1}' | while IFS= read -r cidr; do
-            [ "$cidr" = "$SUBNET" ] && continue
-            echo "$cidr"
-        done | LC_ALL=C sort -u
+        ip route show dev singbox-tun 2>/dev/null \
+            | awk '{print $1}' \
+            | grep -v "^${SUBNET}$" \
+            | LC_ALL=C sort -u
     else
-        # Режим policy routing — отдельная таблица
         ip route show table "$IP_ROUTE_TABLE" dev singbox-tun 2>/dev/null \
-            | awk '{print $1}' | LC_ALL=C sort -u
+            | awk '{print $1}' \
+            | LC_ALL=C sort -u
     fi
 }
 
@@ -92,8 +91,9 @@ ip_ranges_in_sync() {
     desired_tmp=$(mktemp)
     kernel_tmp=$(mktemp)
 
-    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    # Принудительно сортируем оба источника одинаково
+    extract_ip_ranges | LC_ALL=C sort > "$desired_tmp"
+    get_current_kernel_ip_routes | LC_ALL=C sort > "$kernel_tmp"
 
     cmp -s "$desired_tmp" "$kernel_tmp"
     local result=$?
@@ -225,9 +225,10 @@ sync_ip_ranges() {
     add_tmp=$(mktemp)
     del_tmp=$(mktemp)
 
-    extract_ip_ranges | LC_ALL=C sort -u > "$desired_tmp"
-    get_applied_ip_routes | LC_ALL=C sort -u > "$applied_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    # Принудительная сортировка всех трёх источников одним методом
+    extract_ip_ranges        | LC_ALL=C sort > "$desired_tmp"
+    get_applied_ip_routes    | LC_ALL=C sort > "$applied_tmp"
+    get_current_kernel_ip_routes | LC_ALL=C sort > "$kernel_tmp"
 
     # Что добавить: есть в файле, нет в kernel
     comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
