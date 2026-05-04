@@ -34,7 +34,11 @@ get_applied_ip_routes() {
 # Вызывается после успешной синхронизации.
 save_applied_ip_routes() {
     local applied_file="$WARPER_DIR/ip-ranges.applied"
-    extract_ip_ranges | LC_ALL=C sort -u > "$applied_file"
+    local _raw_tmp
+    _raw_tmp=$(mktemp)
+    extract_ip_ranges > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$applied_file"
+    rm -f "$_raw_tmp"
 }
 
 # ===== Чтение реальных маршрутов ядра =====
@@ -72,12 +76,22 @@ get_current_tun_routes() {
 
 # Возвращает количество подсетей в ip-ranges.txt
 count_ip_ranges() {
-    extract_ip_ranges | LC_ALL=C sort -u | wc -l | tr -d ' '
+    local _raw_tmp _count
+    _raw_tmp=$(mktemp)
+    extract_ip_ranges > "$_raw_tmp"
+    _count=$(LC_ALL=C sort -u "$_raw_tmp" | wc -l | tr -d ' ')
+    rm -f "$_raw_tmp"
+    echo "$_count"
 }
 
 # Возвращает количество подсетей в ip-ranges.applied
 count_applied_routes() {
-    get_applied_ip_routes | LC_ALL=C sort -u | wc -l | tr -d ' '
+    local _raw_tmp _count
+    _raw_tmp=$(mktemp)
+    get_applied_ip_routes > "$_raw_tmp"
+    _count=$(LC_ALL=C sort -u "$_raw_tmp" | wc -l | tr -d ' ')
+    rm -f "$_raw_tmp"
+    echo "$_count"
 }
 
 # Алиас для count_applied_routes.
@@ -91,12 +105,18 @@ count_tun_routes() {
 # Проверяет: совпадает ли желаемое состояние (ip-ranges.txt)
 # с реальными kernel routes. Возвращает 0 если синхронизировано.
 ip_ranges_in_sync() {
-    local desired_tmp kernel_tmp
+    local desired_tmp kernel_tmp _raw_tmp
     desired_tmp=$(mktemp)
     kernel_tmp=$(mktemp)
+    _raw_tmp=$(mktemp)
 
-    extract_ip_ranges            | LC_ALL=C sort -u > "$desired_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    extract_ip_ranges > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$desired_tmp"
+
+    get_current_kernel_ip_routes > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$kernel_tmp"
+
+    rm -f "$_raw_tmp"
 
     cmp -s "$desired_tmp" "$kernel_tmp"
     local result=$?
@@ -123,7 +143,8 @@ add_ip_range() {
         return 1
     fi
 
-    if extract_ip_ranges | grep -qxF "$cidr"; then
+    # Ищем напрямую в файле
+    if grep -qE "^[[:space:]]*${cidr}[[:space:]]*$" "$IP_RANGES_FILE" 2>/dev/null; then
         echo -e "${YELLOW}Подсеть $cidr уже есть в списке.${NC}"
         return 0
     fi
@@ -142,14 +163,13 @@ remove_ip_range() {
         return 1
     }
 
-    if ! extract_ip_ranges | grep -qxF "$cidr"; then
+    # Ищем напрямую в файле, игнорируя пробелы
+    if ! grep -qE "^[[:space:]]*${cidr}[[:space:]]*$" "$IP_RANGES_FILE" 2>/dev/null; then
         echo -e "${YELLOW}Подсеть $cidr не найдена в списке.${NC}"
         return 0
     fi
 
-    local escaped
-    escaped=$(printf '%s\n' "$cidr" | sed 's/[[\.*^$()+?{|\\\/]/\\&/g')
-    sed -i "/^[[:space:]]*${escaped}[[:space:]]*$/d" "$IP_RANGES_FILE"
+    sed -i "/^[[:space:]]*$(echo "$cidr" | sed 's/[[\.*^$()+?{|\\\/]/\\&/g')[[:space:]]*$/d" "$IP_RANGES_FILE"
     echo -e "${GREEN}Подсеть $cidr удалена из списка.${NC}"
     return 0
 }
@@ -229,9 +249,19 @@ sync_ip_ranges() {
     del_tmp=$(mktemp)
 
     # Принудительная сортировка всех трёх источников одним методом
-    extract_ip_ranges            | LC_ALL=C sort -u > "$desired_tmp"
-    get_applied_ip_routes        | LC_ALL=C sort -u > "$applied_tmp"
-    get_current_kernel_ip_routes | LC_ALL=C sort -u > "$kernel_tmp"
+    local _raw_tmp
+    _raw_tmp=$(mktemp)
+
+    extract_ip_ranges > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$desired_tmp"
+
+    get_applied_ip_routes > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$applied_tmp"
+
+    get_current_kernel_ip_routes > "$_raw_tmp"
+    LC_ALL=C sort -u "$_raw_tmp" > "$kernel_tmp"
+
+    rm -f "$_raw_tmp"
 
     # Что добавить: есть в файле, нет в kernel
     comm -23 "$desired_tmp" "$kernel_tmp" > "$add_tmp"
