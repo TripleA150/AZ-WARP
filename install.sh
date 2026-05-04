@@ -377,6 +377,7 @@ done
     echo "TUN_IP=$TUN_IP"
     echo "IP_ROUTE_MODE=antizapret"
     echo "IP_EXPORT_TO_ANTIZAPRET=y"
+    echo "FULLVPN_WARP_RESOLVE=n"
 } > "$CONF_FILE"
 chmod 600 "$CONF_FILE"
 echo -e "${GREEN}✔ Подсеть $SUBNET установлена.${NC}"
