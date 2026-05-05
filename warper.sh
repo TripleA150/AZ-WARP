@@ -95,7 +95,7 @@ if [ ! -d "$WARPER_LIB" ] || [ ! -f "$WARPER_LIB/utils.sh" ]; then
         return 1
     }
 
-    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update; do
+    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update cli; do
         _fetch_module "$REPO_URL/lib/${_libfile}.sh" "$WARPER_LIB/${_libfile}.sh" "lib/${_libfile}.sh" || exit 1
     done
 
@@ -118,6 +118,7 @@ for _lib in \
     "$WARPER_LIB/ip-routes.sh" \
     "$WARPER_LIB/diagnostics.sh" \
     "$WARPER_LIB/update.sh" \
+    "$WARPER_LIB/cli.sh" \    
     "$WARPER_MENUS/settings.sh" \
     "$WARPER_MENUS/singbox-menu.sh" \
     "$WARPER_MENUS/ip-menu.sh" \
@@ -167,7 +168,13 @@ check_and_sync_warp_keys
 case "${1:-}" in
     patch)    patch_kresd >/dev/null 2>&1; exit $? ;;
     doctor)   doctor; exit $? ;;
-    status)   status_cmd; exit $? ;;
+    status)
+        if [ "${2:-}" = "json" ]; then
+            cli_status_json; exit $?
+        else
+            status_cmd; exit $?
+        fi
+        ;;
     sync)
         if is_warper_active; then patch_kresd
         else sync_domains; echo -e "${GREEN}Домены синхронизированы.${NC}"; fi
@@ -192,6 +199,50 @@ case "${1:-}" in
     ipsync)   sync_ip_ranges; exit $? ;;
     iplist)   extract_ip_ranges; exit $? ;;
     iproutes) get_current_tun_routes; exit $? ;;
+
+    # ===== Новые команды для веб-панели =====
+    toggle)   cli_toggle_warper; exit $? ;;
+    mode)
+        case "${2:-}" in
+            warp)  cli_mode_warp "${3:-}"; exit $? ;;
+            slave) cli_mode_slave "${3:-}" "${4:-}" "${5:-}"; exit $? ;;
+            wg)    cli_mode_wg "${3:-}"; exit $? ;;
+            *)
+                echo "Использование: warper mode warp [system|wgcf|root|generate]"
+                echo "               warper mode slave SERVER PORT PASSWORD"
+                echo "               warper mode wg /path/to.conf"
+                exit 1
+                ;;
+        esac
+        ;;
+    logs)        cli_logs "${2:-100}"; exit $? ;;
+    config)
+        case "${2:-}" in
+            get) cli_config_get "${3:-}"; exit $? ;;
+            *)   echo "Использование: warper config get KEY"; exit 1 ;;
+        esac
+        ;;
+    subnet)      cli_subnet "${2:-}"; exit $? ;;
+    loglevel)    cli_loglevel "${2:-}"; exit $? ;;
+    mtu)         cli_mtu "${2:-}"; exit $? ;;
+    autopatch)   cli_autopatch "${2:-}"; exit $? ;;
+    fullvpn)     cli_fullvpn "${2:-}"; exit $? ;;
+    iproutemode) cli_iproutemode "${2:-}"; exit $? ;;
+    ipexport)    cli_ipexport "${2:-}"; exit $? ;;
+    warpkey)
+        case "${2:-}" in
+            list)     cli_warpkey_list; exit $? ;;
+            generate) cli_generate_warp_key; exit $? ;;
+            *)        echo "Использование: warper warpkey list|generate"; exit 1 ;;
+        esac
+        ;;
+    wgconfig)
+        case "${2:-}" in
+            list) cli_wg_list; exit $? ;;
+            *)    echo "Использование: warper wgconfig list"; exit 1 ;;
+        esac
+        ;;
+    domainslist) cli_domains_list; exit $? ;;
 esac
 
 # ===== Главное меню =====
