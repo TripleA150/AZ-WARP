@@ -116,7 +116,7 @@ function initEventHandlers() {
         return;
     }
 
-    // Toast
+    // Toast через HX-Trigger
     document.body.addEventListener('showToast', function(evt) {
         const detail = evt.detail || {};
         const message = detail.message || (detail.value && detail.value.message) || 'Готово';
@@ -124,31 +124,28 @@ function initEventHandlers() {
         showToast(message, category);
     });
 
-    // Триггеры обновлений: для страниц без HTMX-фрагментов делаем reload
-    // Страницы с HTMX-полем (#status-summary, #domains-list и т.д.) обновятся сами
+    // Smart reload — если на странице есть HTMX-фрагмент с этим триггером,
+    // он сам обновится. Иначе перезагружаем страницу через 800мс.
     function smartReload(targetId) {
-        // если на странице есть элемент, который слушает свой триггер - HTMX сам обновит
-        // если нет - перезагружаем страницу через 600ms (даём время тосту показаться)
-        if (!document.querySelector('[hx-trigger*="' + targetId + '"]')) {
-            setTimeout(function() { window.location.reload(); }, 600);
+        // Ищем элементы которые слушают этот триггер на body
+        const selectors = [
+            '[hx-trigger*="' + targetId + ' from:body"]',
+            '[hx-trigger*="' + targetId + '"]'
+        ];
+        for (let sel of selectors) {
+            if (document.querySelector(sel)) {
+                return; // фрагмент сам обновится
+            }
         }
+        // Не нашли — перезагружаем страницу
+        setTimeout(function() { window.location.reload(); }, 800);
     }
 
-    document.body.addEventListener('refreshAll', function() {
-        smartReload('refreshAll');
-    });
-    document.body.addEventListener('refreshSettings', function() {
-        smartReload('refreshSettings');
-    });
-    document.body.addEventListener('refreshSingbox', function() {
-        smartReload('refreshSingbox');
-    });
-    document.body.addEventListener('refreshDomains', function() {
-        smartReload('refreshDomains');
-    });
-    document.body.addEventListener('refreshIpRanges', function() {
-        smartReload('refreshIpRanges');
-    });
+    document.body.addEventListener('refreshAll', function() { smartReload('refreshAll'); });
+    document.body.addEventListener('refreshSettings', function() { smartReload('refreshSettings'); });
+    document.body.addEventListener('refreshSingbox', function() { smartReload('refreshSingbox'); });
+    document.body.addEventListener('refreshDomains', function() { smartReload('refreshDomains'); });
+    document.body.addEventListener('refreshIpRanges', function() { smartReload('refreshIpRanges'); });
 
     // Подтверждение через data-confirm
     document.body.addEventListener('htmx:confirm', function(evt) {
@@ -188,18 +185,66 @@ function initEventHandlers() {
         if (l) l.classList.remove('htmx-request');
     });
 
+    // ===== СОХРАНЕНИЕ ПОЗИЦИИ СКРОЛЛА ЛОГОВ =====
+    // Перед заменой контента запоминаем scrollTop, после — восстанавливаем
+    let savedScrollPositions = {};
+
+    document.body.addEventListener('htmx:beforeSwap', function(evt) {
+        const target = evt.detail.target;
+        if (target && target.id) {
+            // Запоминаем скролл основного контейнера и всех скроллящихся внутри
+            savedScrollPositions[target.id] = {
+                outer: target.scrollTop,
+                inner: {}
+            };
+            const scrollables = target.querySelectorAll('.scroll-thin, [class*="overflow-y-auto"]');
+            scrollables.forEach(function(el, idx) {
+                if (el.id) {
+                    savedScrollPositions[target.id].inner[el.id] = el.scrollTop;
+                }
+            });
+        }
+    });
+
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+        const target = evt.detail.target;
+        if (target && target.id && savedScrollPositions[target.id]) {
+            const saved = savedScrollPositions[target.id];
+            // Восстанавливаем outer
+            target.scrollTop = saved.outer;
+            // Восстанавливаем inner по id
+            Object.keys(saved.inner).forEach(function(innerId) {
+                const el = document.getElementById(innerId);
+                if (el) el.scrollTop = saved.inner[innerId];
+            });
+            delete savedScrollPositions[target.id];
+        }
+    });
+
     // Сетевые ошибки
     document.body.addEventListener('htmx:responseError', function(evt) {
         const status = evt.detail && evt.detail.xhr && evt.detail.xhr.status;
-        showToast('Ошибка сервера: ' + (status || 'неизвестно'), 'error');
+        let msg = 'Ошибка сервера';
+        if (status === 502 || status === 504) {
+            msg = 'Операция выполняется дольше обычного. Обновите страницу через 5-10 сек.';
+        } else if (status) {
+            msg = 'Ошибка сервера: ' + status;
+        }
+        showToast(msg, 'error');
     });
     document.body.addEventListener('htmx:sendError', function() {
         showToast('Не удалось связаться с сервером', 'error');
     });
     document.body.addEventListener('htmx:timeout', function() {
-        showToast('Превышено время ожидания. Операция могла выполниться — обновите страницу.', 'warning');
-        setTimeout(function() { window.location.reload(); }, 2000);
+        showToast('Превышено время ожидания. Обновите страницу.', 'warning');
+        setTimeout(function() { window.location.reload(); }, 2500);
     });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initEventHandlers);
+} else {
+    initEventHandlers();
 }
 
 if (document.readyState === 'loading') {
