@@ -1,0 +1,393 @@
+{% extends "base.html" %}
+
+
+
+{% block title %}Домены{% endblock %}
+
+{% block heading %}Управление доменами{% endblock %}
+
+
+
+{% block content %}
+
+
+
+<!-- ===== Действия со списками ===== -->
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+
+
+
+    <!-- Gemini -->
+
+    <div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-5"
+
+         id="gemini-card">
+
+        <div class="flex items-center justify-between mb-3">
+
+            <div>
+
+                <div class="text-xs uppercase tracking-wider text-emerald-500/70 font-semibold mb-1">Список</div>
+
+                <div class="text-lg font-bold text-emerald-100">Gemini</div>
+
+            </div>
+
+            <span id="gemini-status" class="text-xs px-2 py-1 rounded">—</span>
+
+        </div>
+
+        <div class="flex gap-2">
+
+            <button hx-post="{{ url_for('htmx_list_toggle') }}"
+            
+                    hx-swap="none"
+
+                    hx-vals='{"list":"gemini","enable":"1"}'
+
+                    class="flex-1 px-3 py-2 bg-brand-700/30 hover:bg-brand-700/50 border border-brand-700/40 text-brand-200 rounded-lg text-sm transition">
+
+                Включить
+
+            </button>
+
+            <button hx-post="{{ url_for('htmx_list_toggle') }}"
+
+                    hx-vals='{"list":"gemini","enable":"0"}'
+
+                    class="flex-1 px-3 py-2 bg-red-700/30 hover:bg-red-700/50 border border-red-700/40 text-red-200 rounded-lg text-sm transition">
+
+                Выключить
+
+            </button>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- ChatGPT -->
+
+    <div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-5"
+
+         id="chatgpt-card">
+
+        <div class="flex items-center justify-between mb-3">
+
+            <div>
+
+                <div class="text-xs uppercase tracking-wider text-emerald-500/70 font-semibold mb-1">Список</div>
+
+                <div class="text-lg font-bold text-emerald-100">ChatGPT</div>
+
+            </div>
+
+            <span id="chatgpt-status" class="text-xs px-2 py-1 rounded">—</span>
+
+        </div>
+
+        <div class="flex gap-2">
+
+            <button hx-post="{{ url_for('htmx_list_toggle') }}"
+
+                    hx-vals='{"list":"chatgpt","enable":"1"}'
+
+                    class="flex-1 px-3 py-2 bg-brand-700/30 hover:bg-brand-700/50 border border-brand-700/40 text-brand-200 rounded-lg text-sm transition">
+
+                Включить
+
+            </button>
+
+            <button hx-post="{{ url_for('htmx_list_toggle') }}"
+
+                    hx-vals='{"list":"chatgpt","enable":"0"}'
+
+                    class="flex-1 px-3 py-2 bg-red-700/30 hover:bg-red-700/50 border border-red-700/40 text-red-200 rounded-lg text-sm transition">
+
+                Выключить
+
+            </button>
+
+        </div>
+
+    </div>
+
+
+
+    <!-- Синхронизация -->
+
+    <div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-5">
+
+        <div class="text-xs uppercase tracking-wider text-emerald-500/70 font-semibold mb-1">Синхронизация</div>
+
+        <div class="text-lg font-bold text-emerald-100 mb-3">Применить изменения</div>
+
+        <button hx-post="{{ url_for('htmx_domain_sync') }}"
+        
+                hx-swap="none"
+
+                class="w-full px-3 py-2 bg-brand-700 hover:bg-brand-600 text-white rounded-lg text-sm font-medium transition shadow-lg shadow-brand-900/40">
+
+            ↻ Синхронизировать
+
+        </button>
+
+        <p class="text-xs text-emerald-500/60 mt-2">Применяет домены в DNS (kresd)</p>
+
+    </div>
+
+</div>
+
+
+
+<!-- ===== Добавление доменов ===== -->
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+
+
+
+    <!-- Одиночное добавление -->
+
+    <div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-5">
+
+        <h3 class="text-sm font-semibold text-emerald-200 mb-3">Добавить домен</h3>
+
+        <form hx-post="{{ url_for('htmx_domain_add') }}"
+        
+              hx-swap="none"
+
+              hx-on::after-request="if(event.detail.successful) this.reset()"
+
+              class="flex gap-2">
+
+            <input type="text" name="domain" required
+
+                   placeholder="example.com"
+
+                   class="flex-1 px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
+
+                          text-emerald-100 placeholder-emerald-700 text-sm
+
+                          focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">
+
+            <button type="submit"
+
+                    class="px-4 py-2 bg-brand-700 hover:bg-brand-600 text-white rounded-lg text-sm font-medium transition">
+
+                Добавить
+
+            </button>
+
+        </form>
+
+        <p class="text-xs text-emerald-500/60 mt-2">
+
+            Минимум 2 уровня (example.com), без www
+
+        </p>
+
+    </div>
+
+
+
+    <!-- Групповое добавление -->
+
+    <div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-5">
+
+        <h3 class="text-sm font-semibold text-emerald-200 mb-3">Групповое добавление</h3>
+
+        <button onclick="openModal('modal-bulk-domains')"
+
+                class="w-full px-4 py-2 bg-surface-950 hover:bg-emerald-900/30 border border-emerald-900/40 text-emerald-200 rounded-lg text-sm font-medium transition">
+
+            ⊕ Добавить много доменов
+
+        </button>
+
+        <p class="text-xs text-emerald-500/60 mt-2">
+
+            Импортируйте список доменов разом
+
+        </p>
+
+    </div>
+
+</div>
+
+
+
+<!-- ===== Фильтр и поиск ===== -->
+
+<div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-4 mb-4">
+
+    <div class="flex flex-col md:flex-row gap-3">
+
+
+
+        <!-- Поиск -->
+
+        <input type="search" name="q" placeholder="Поиск домена..."
+
+               hx-get="{{ url_for('htmx_domains_list') }}"
+
+               hx-trigger="input changed delay:300ms, search"
+
+               hx-target="#domains-list"
+
+               hx-include="[name='type']"
+
+               class="flex-1 px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
+
+                      text-emerald-100 placeholder-emerald-700 text-sm
+
+                      focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none">
+
+
+
+        <!-- Фильтр по типу -->
+
+        <div class="flex gap-1 bg-surface-950 border border-emerald-900/50 rounded-lg p-1">
+
+            {% for value, label in [('all', 'Все'), ('user', 'Свои'), ('gemini', 'Gemini'), ('chatgpt', 'ChatGPT')] %}
+
+                <label class="cursor-pointer">
+
+                    <input type="radio" name="type" value="{{ value }}"
+
+                           {% if loop.first %}checked{% endif %}
+
+                           hx-get="{{ url_for('htmx_domains_list') }}"
+
+                           hx-trigger="change"
+
+                           hx-target="#domains-list"
+
+                           hx-include="[name='q']"
+
+                           class="peer sr-only">
+
+                    <span class="block px-3 py-1.5 text-sm rounded-md transition
+
+                                 text-emerald-300/70 hover:text-emerald-100
+
+                                 peer-checked:bg-brand-700 peer-checked:text-white peer-checked:font-medium">
+
+                        {{ label }}
+
+                    </span>
+
+                </label>
+
+            {% endfor %}
+
+        </div>
+
+    </div>
+
+</div>
+
+
+
+<!-- ===== Список доменов ===== -->
+
+<div id="domains-list"
+
+     hx-get="{{ url_for('htmx_domains_list') }}"
+
+     hx-trigger="load, refreshDomains from:body"
+
+     hx-swap="innerHTML">
+
+    <div class="bg-surface-900/40 border border-emerald-900/30 rounded-xl p-12 text-center text-emerald-500/60">
+
+        Загрузка...
+
+    </div>
+
+</div>
+
+
+
+<!-- ===== Модальное окно: групповое добавление ===== -->
+
+<div id="modal-bulk-domains" class="hidden fixed inset-0 z-50 items-center justify-center p-4">
+
+    <div class="modal-backdrop absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+
+    <div class="relative bg-surface-900 border border-emerald-900/40 rounded-xl shadow-2xl w-full max-w-2xl">
+
+        <div class="px-6 py-4 border-b border-emerald-900/40 flex items-center justify-between">
+
+            <h3 class="text-lg font-semibold text-emerald-100">Групповое добавление доменов</h3>
+
+            <button onclick="closeModal('modal-bulk-domains')" class="text-emerald-500 hover:text-emerald-300 text-2xl leading-none">&times;</button>
+
+        </div>
+
+        <form hx-post="{{ url_for('htmx_domain_bulk_add') }}"
+        
+              hx-swap="none"
+
+              hx-on::after-request="if(event.detail.successful){closeModal('modal-bulk-domains'); this.reset();}"
+
+              class="p-6 space-y-4">
+
+            <div>
+
+                <label class="block text-sm text-emerald-200 mb-2">Домены (по одному на строку)</label>
+
+                <textarea name="domains" rows="12" required
+
+                          placeholder="example.com&#10;openai.com&#10;sub.example.org&#10;# строки с # будут пропущены"
+
+                          class="w-full px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
+
+                                 text-emerald-100 placeholder-emerald-700 text-sm font-mono
+
+                                 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none resize-y"></textarea>
+
+                <p class="text-xs text-emerald-500/60 mt-2">
+
+                    Невалидные домены и дубликаты будут автоматически пропущены.
+
+                </p>
+
+            </div>
+
+            <div class="flex justify-end gap-2 pt-2 border-t border-emerald-900/40">
+
+                <button type="button" onclick="closeModal('modal-bulk-domains')"
+
+                        class="px-4 py-2 text-sm text-emerald-300 hover:text-emerald-100">
+
+                    Отмена
+
+                </button>
+
+                <button type="submit"
+
+                        class="px-4 py-2 bg-brand-700 hover:bg-brand-600 text-white rounded-lg text-sm font-medium transition flex items-center gap-2">
+        
+                        <span 
+                    
+                            class="htmx-indicator inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin">
+                    
+                        </span>
+
+                    Добавить все
+
+                </button>
+
+            </div>
+
+        </form>
+
+    </div>
+
+</div>
+
+
+
+{% endblock %}
