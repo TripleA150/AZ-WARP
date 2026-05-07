@@ -11,6 +11,12 @@
     
     <!-- HTMX (офлайн) -->
     <script src="{{ url_for('static', filename='htmx.min.js') }}"></script>
+    <script>
+        // Глобальный таймаут HTMX = 5 минут (для долгих операций warper)
+        if (window.htmx) {
+            htmx.config.timeout = 300000;
+        }
+    </script>
 
     <!-- Наши скрипты (с конфигом Tailwind) -->
     <script src="{{ url_for('static', filename='app.js') }}"></script>
