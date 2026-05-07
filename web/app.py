@@ -264,6 +264,22 @@ def htmx_domain_sync():
     return _result_partial(ok, msg or "Синхронизация завершена", "refreshDomains")
 
 
+@app.route("/htmx/domains/file-content")
+@login_required
+def htmx_domains_file_content():
+    """Возвращает только пользовательские домены для редактирования."""
+    text = api.get_user_domains_block()
+    return text, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.route("/htmx/domains/file-save", methods=["POST"])
+@login_required
+def htmx_domains_file_save():
+    """Сохраняет пользовательские домены и синкает."""
+    text = request.form.get("content", "")
+    ok, msg = api.save_user_domains_block(text)
+    return _result_partial(ok, msg, "refreshDomains")
+
 # ===== HTMX: IP-подсети =====
 
 @app.route("/htmx/ip-ranges-list")
