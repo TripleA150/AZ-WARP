@@ -112,21 +112,45 @@ function toggleSidebar() {
 
 function initEventHandlers() {
     if (!document.body) {
-        // на всякий случай
         setTimeout(initEventHandlers, 50);
         return;
     }
 
-    // Toast через HX-Trigger
+    // Toast
     document.body.addEventListener('showToast', function(evt) {
         const detail = evt.detail || {};
-        // HTMX 2.x при JSON-объекте кладёт его прямо в evt.detail
         const message = detail.message || (detail.value && detail.value.message) || 'Готово';
         const category = detail.category || (detail.value && detail.value.category) || 'info';
         showToast(message, category);
     });
 
-    // Подтверждение действий через data-confirm
+    // Триггеры обновлений: для страниц без HTMX-фрагментов делаем reload
+    // Страницы с HTMX-полем (#status-summary, #domains-list и т.д.) обновятся сами
+    function smartReload(targetId) {
+        // если на странице есть элемент, который слушает свой триггер - HTMX сам обновит
+        // если нет - перезагружаем страницу через 600ms (даём время тосту показаться)
+        if (!document.querySelector('[hx-trigger*="' + targetId + '"]')) {
+            setTimeout(function() { window.location.reload(); }, 600);
+        }
+    }
+
+    document.body.addEventListener('refreshAll', function() {
+        smartReload('refreshAll');
+    });
+    document.body.addEventListener('refreshSettings', function() {
+        smartReload('refreshSettings');
+    });
+    document.body.addEventListener('refreshSingbox', function() {
+        smartReload('refreshSingbox');
+    });
+    document.body.addEventListener('refreshDomains', function() {
+        smartReload('refreshDomains');
+    });
+    document.body.addEventListener('refreshIpRanges', function() {
+        smartReload('refreshIpRanges');
+    });
+
+    // Подтверждение через data-confirm
     document.body.addEventListener('htmx:confirm', function(evt) {
         const elt = evt.detail.elt;
         const txt = elt && elt.getAttribute && elt.getAttribute('data-confirm');
@@ -147,7 +171,6 @@ function initEventHandlers() {
         }
     });
 
-    // Escape для модалок
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             const open = document.querySelectorAll('[id^="modal-"]:not(.hidden)');
@@ -155,7 +178,7 @@ function initEventHandlers() {
         }
     });
 
-    // Глобальный индикатор загрузки HTMX
+    // Глобальный индикатор загрузки
     document.body.addEventListener('htmx:beforeRequest', function() {
         const l = document.getElementById('global-loader');
         if (l) l.classList.add('htmx-request');
@@ -165,12 +188,17 @@ function initEventHandlers() {
         if (l) l.classList.remove('htmx-request');
     });
 
-    // Если HTMX вернул ошибку сети
+    // Сетевые ошибки
     document.body.addEventListener('htmx:responseError', function(evt) {
-        showToast('Ошибка сервера: ' + (evt.detail.xhr.status || 'неизвестно'), 'error');
+        const status = evt.detail && evt.detail.xhr && evt.detail.xhr.status;
+        showToast('Ошибка сервера: ' + (status || 'неизвестно'), 'error');
     });
     document.body.addEventListener('htmx:sendError', function() {
         showToast('Не удалось связаться с сервером', 'error');
+    });
+    document.body.addEventListener('htmx:timeout', function() {
+        showToast('Превышено время ожидания. Операция могла выполниться — обновите страницу.', 'warning');
+        setTimeout(function() { window.location.reload(); }, 2000);
     });
 }
 
