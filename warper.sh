@@ -64,11 +64,21 @@ MENU_REMOTE_VER="$LOCAL_VER"
 
 # ===== Lock-файл =====
 acquire_lock() {
-    exec 9>"$LOCK_FILE"
-    if ! flock -n 9; then
-        echo -e "${RED}Другой экземпляр warper уже запущен.${NC}" >&2
-        exit 1
-    fi
+# Lock с ожиданием для CLI команд, без lock для read-only команд
+case "${1:-}" in
+    # Read-only команды - lock не нужен
+    status|doctor|iplist|iproutes|logs|domainslist|warpkey|wgconfig|config)
+        :  # пропускаем lock
+        ;;
+    *)
+        # Для остальных - ждём освобождения lock до 10 секунд
+        exec 9>"$LOCK_FILE"
+        if ! flock -w 10 9; then
+            echo -e "${RED}Не удалось получить блокировку (другая операция выполняется > 10 сек)${NC}" >&2
+            exit 1
+        fi
+        ;;
+esac
 }
 release_lock() { rm -f "$LOCK_FILE"; }
 trap 'release_lock' EXIT
