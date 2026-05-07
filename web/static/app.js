@@ -87,7 +87,10 @@ function escapeHtml(text) {
 // ===== Слушатели HX-Trigger =====
 
 document.body.addEventListener('showToast', function(evt) {
-    const { message, category } = evt.detail;
+    console.log('showToast event:', evt.detail);
+    const detail = evt.detail || {};
+    const message = detail.message || detail.value?.message || 'Готово';
+    const category = detail.category || detail.value?.category || 'info';
     showToast(message, category);
 });
 
