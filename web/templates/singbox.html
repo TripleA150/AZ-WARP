@@ -1,17 +1,17 @@
-
 {% extends "base.html" %}
 
-{% block title %}В разработке{% endblock %}
-
-{% block heading %}В разработке{% endblock %}
+{% block title %}sing-box{% endblock %}
+{% block heading %}Управление sing-box{% endblock %}
 
 {% block content %}
 
-<div class="bg-surface-900/60 border border-emerald-900/40 rounded-xl p-8 text-center">
-
-    <div class="text-emerald-400/70">Эта страница появится в следующей части.</div>
-
+<div id="singbox-content"
+     hx-get="{{ url_for('htmx_singbox_status') }}"
+     hx-trigger="load, every 60s, refreshSingbox from:body, refreshAll from:body"
+     hx-swap="innerHTML">
+    <div class="bg-surface-900/40 border border-emerald-900/30 rounded-xl p-12 text-center text-emerald-500/60">
+        Загрузка...
+    </div>
 </div>
 
 {% endblock %}
-
