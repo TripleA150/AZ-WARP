@@ -255,6 +255,13 @@ case "${1:-}" in
         esac
         ;;
     domainslist) cli_domains_list; exit $? ;;
+    ipranges)
+        case "${2:-}" in
+            list) cli_ip_ranges_content; exit $? ;;
+            save) cli_ip_ranges_save; exit $? ;;
+            *)    echo "Использование: warper ipranges list|save"; exit 1 ;;
+        esac
+        ;;
 esac
 
 # ===== Главное меню =====
