@@ -1,7 +1,6 @@
-{# Список доменов с обновлением статусов карточек Gemini/ChatGPT через JS #}
+{# Список доменов с обновлением статусов карточек Gemini/ChatGPT #}
 
 <script>
-// Обновляем статусы карточек Gemini/ChatGPT
 (function() {
     const updates = {
         'gemini': {{ 'true' if gemini_enabled else 'false' }},
@@ -9,7 +8,6 @@
         'has_gemini': {{ 'true' if has_gemini else 'false' }},
         'has_chatgpt': {{ 'true' if has_chatgpt else 'false' }}
     };
-
     ['gemini', 'chatgpt'].forEach(name => {
         const el = document.getElementById(name + '-status');
         if (!el) return;
@@ -78,3 +76,7 @@
         </div>
     {% else %}
         <div class="p-12 text-center text-emerald-500/60">
+            Домены не найдены
+        </div>
+    {% endif %}
+</div>
