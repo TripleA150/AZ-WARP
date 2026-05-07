@@ -86,18 +86,20 @@
         <h3 class="text-sm font-semibold text-emerald-200 mb-1">Fake-подсеть</h3>
         <p class="text-xs text-emerald-500/60 mb-4">
             Текущая: <span class="font-mono text-emerald-300">{{ status.subnet.fake }}</span>.
-            Изменение пересоберёт конфиг, перезапустит sing-box и обновит маршруты AntiZapret.
+            Операция занимает 30-60 секунд (пересборка + doall.sh ip).
         </p>
         <form hx-post="{{ url_for('htmx_settings_subnet') }}"
               hx-swap="none"
-              data-confirm="Изменить fake-подсеть? Это пересоберёт всю маршрутизацию."
+              hx-on::before-request="this.querySelector('button').disabled=true; this.querySelector('button').innerText='Применяется... (до 60 сек)'"
+              hx-on::after-request="this.querySelector('button').disabled=false; this.querySelector('button').innerText='Изменить'"
+              data-confirm="Изменить fake-подсеть? Это пересоберёт всю маршрутизацию (30-60 сек)."
               class="flex gap-2 max-w-md">
             <input type="text" name="subnet" value="{{ status.subnet.fake }}"
                    placeholder="198.20.0.0/24"
                    class="flex-1 px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
                           text-emerald-100 text-sm font-mono focus:border-brand-500 focus:outline-none">
             <button type="submit"
-                    class="px-3 py-2 bg-brand-700 hover:bg-brand-600 text-white rounded-lg text-sm transition">
+                    class="px-3 py-2 bg-brand-700 hover:bg-brand-600 text-white rounded-lg text-sm transition disabled:opacity-50">
                 Изменить
             </button>
         </form>
