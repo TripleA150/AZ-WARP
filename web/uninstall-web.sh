@@ -1,10 +1,14 @@
 #!/bin/bash
 set -uo pipefail
 
-# Если stdin не терминал (запущено через curl|bash), пересоединяем к /dev/tty
-if [ ! -t 0 ] && [ -e /dev/tty ]; then
-    exec < /dev/tty
+# Если запущено через "curl ... | bash" — переключаем stdin на терминал
+# чтобы read работал. Делаем это БЕЗОПАСНО.
+if [ ! -t 0 ]; then
+    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+        exec </dev/tty
+    fi
 fi
+
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
