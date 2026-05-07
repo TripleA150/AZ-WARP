@@ -69,7 +69,8 @@ def _flash_partial(message: str, category: str = "success"):
 def _result_partial(ok: bool, message: str, refresh_target: str | None = None):
     """
     Универсальный ответ на HTMX-действие.
-    Возвращает фрагмент уведомления и опционально триггерит обновление.
+    Возвращает 204 No Content + триггеры для toast и обновления.
+    HTMX при 204 НЕ заменяет содержимое
     """
     import json as _json
     category = "success" if ok else "error"
@@ -77,7 +78,7 @@ def _result_partial(ok: bool, message: str, refresh_target: str | None = None):
     if ok and refresh_target:
         triggers[refresh_target] = True
 
-    resp = make_response("")
+    resp = make_response("", 204)
     resp.headers["HX-Trigger"] = _json.dumps(triggers)
     return resp
 
