@@ -504,9 +504,12 @@ def singbox_action(action: str) -> tuple[bool, str]:
     """start / stop / restart / enable / disable."""
     if action not in ("start", "stop", "restart", "enable", "disable"):
         return False, "Недопустимое действие"
-    rc, out, err = _run(["systemctl", action, "sing-box"], timeout=60)  # было 30
-    return rc == 0, (out or err).strip() or f"sing-box {action} ok"
-
+    # enable/disable - быстрые, start/stop/restart - могут быть медленнее
+    timeout = 30 if action in ("enable", "disable") else 90
+    rc, out, err = _run(["systemctl", action, "sing-box"], timeout=timeout)
+    if rc != 0:
+        return False, (err or out).strip() or f"sing-box {action} failed"
+    return True, f"sing-box {action}: ok"
 
 # ===== WARPER toggle =====
 
@@ -702,3 +705,59 @@ def upload_wg_config(filename: str, content: str) -> tuple[bool, str, str]:
         return False, f"Ошибка сохранения: {e}", ""
 
     return True, f"Конфиг сохранён: {target_path}", target_path
+
+# ===== Редактирование ip-ranges.txt напрямую =====
+
+def get_ip_ranges_content() -> str:
+    """Возвращает содержимое ip-ranges.txt (без шапки)."""
+    ok, out, _ = _run_warper("ipranges", "list", timeout=10)
+    if not ok:
+        return ""
+    return out
+
+
+def save_ip_ranges_content(text: str) -> tuple[bool, str]:
+    """
+    Сохраняет ip-ranges.txt и запускает sync.
+    """
+    # Валидация на стороне Python — быстрее даём ошибку
+    lines = [l.strip() for l in text.splitlines()]
+    valid: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+
+    for ln in lines:
+        if not ln or ln.startswith("#"):
+            continue
+        cidr = ln if "/" in ln else f"{ln}/32"
+        if not _validate_cidr_format(cidr):
+            invalid.append(ln)
+            continue
+        if cidr in seen:
+            continue
+        seen.add(cidr)
+        valid.append(cidr)
+
+    if invalid:
+        msg = "Некорректные CIDR: " + ", ".join(invalid[:5])
+        if len(invalid) > 5:
+            msg += f" (и ещё {len(invalid) - 5})"
+        return False, msg
+
+    # Передаём через stdin
+    content = "\n".join(valid) + "\n"
+    try:
+        proc = subprocess.run(
+            [WARPER_BIN, "ipranges", "save"],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout).strip() or "Ошибка сохранения"
+        return True, f"Сохранено {len(valid)} подсетей"
+    except subprocess.TimeoutExpired:
+        return False, "Таймаут операции"
+    except Exception as e:
+        return False, str(e)
