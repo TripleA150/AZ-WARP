@@ -404,7 +404,7 @@ cli_subnet() {
     # Обновляем маршруты AntiZapret
     export DEBIAN_FRONTEND=noninteractive
     export SYSTEMD_PAGER=""
-    bash /root/antizapret/doall.sh </dev/null >/dev/null 2>&1
+    bash /root/antizapret/doall.sh ip </dev/null >/dev/null 2>&1
 
     if systemctl is-active --quiet sing-box; then
         systemctl restart sing-box
@@ -778,4 +778,70 @@ cli_domains_list() {
             echo "$line|user|1"
         fi
     done < "$MASTER_FILE"
+}
+
+# ===== РЕДАКТИРОВАНИЕ ip-ranges.txt =====
+
+# Возвращает содержимое ip-ranges.txt без шапки и комментариев.
+cli_ip_ranges_content() {
+    if [ ! -f "$IP_RANGES_FILE" ]; then
+        return 0
+    fi
+    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$IP_RANGES_FILE"
+}
+
+# Заменяет содержимое ip-ranges.txt на переданные строки и синкает.
+# Принимает CIDR из stdin (по строке).
+cli_ip_ranges_save() {
+    local tmp
+    tmp=$(mktemp)
+
+    # Сохраняем шапку
+    cat << 'IPEOF' > "$tmp"
+# Добавление IPv4-адресов для маршрутизации через Warper (Sing-box tun)
+#
+# Формат записи: A.B.C.D/M
+# Примеры: 5.255.255.242/32  66.22.192.0/18  104.24.0.0/14
+#
+# Строки начинающиеся с # - комментарии, не обрабатываются.
+# После изменения файла выполните: warper ipsync
+IPEOF
+
+    # Валидируем и добавляем CIDR из stdin
+    local invalid_count=0
+    local valid_count=0
+    while IFS= read -r line; do
+        line=$(echo "$line" | tr -d '[:space:]')
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+
+        # Если без маски - добавляем /32
+        if [[ "$line" != */* ]]; then
+            line="${line}/32"
+        fi
+
+        if validate_cidr "$line" >/dev/null 2>&1; then
+            echo "$line" >> "$tmp"
+            valid_count=$((valid_count + 1))
+        else
+            invalid_count=$((invalid_count + 1))
+        fi
+    done
+
+    if [ "$invalid_count" -gt 0 ]; then
+        rm -f "$tmp"
+        echo "ERROR: $invalid_count invalid CIDR entries" >&2
+        return 1
+    fi
+
+    mv "$tmp" "$IP_RANGES_FILE"
+    chmod 644 "$IP_RANGES_FILE"
+
+    # Синкаем
+    if is_warper_active; then
+        sync_ip_ranges >/dev/null 2>&1 || true
+    fi
+
+    echo "Saved $valid_count CIDR entries"
+    return 0
 }
