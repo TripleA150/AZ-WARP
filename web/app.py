@@ -53,15 +53,31 @@ logger = logging.getLogger(__name__)
 def _result_partial(ok, message, refresh_target=None):
     """
     204 + HX-Trigger для toast и обновления.
-    refresh_target = 'refreshAll' триггерит reload страницы.
+    КРИТИЧНО: HTTP заголовки требуют ASCII-only без переносов строк и спец-символов.
     """
     category = "success" if ok else "error"
-    triggers = {"showToast": {"message": message or ("Готово" if ok else "Ошибка"), "category": category}}
+
+    # Чистим сообщение: убираем переносы строк, табы, контрольные символы
+    safe_msg = (message or ("Готово" if ok else "Ошибка"))
+    # Убираем все управляющие символы (включая \r \n \t)
+    safe_msg = "".join(ch if ch >= " " or ch == " " else " " for ch in str(safe_msg))
+    # Сжимаем пробелы
+    safe_msg = " ".join(safe_msg.split())
+    # Обрезаем слишком длинные сообщения
+    if len(safe_msg) > 500:
+        safe_msg = safe_msg[:497] + "..."
+
+    triggers = {
+        "showToast": {"message": safe_msg, "category": category}
+    }
     if ok and refresh_target:
         triggers[refresh_target] = True
 
+    # ensure_ascii=True - ВАЖНО, иначе кириллица ломает HTTP заголовок
+    header_value = _json.dumps(triggers, ensure_ascii=True)
+
     resp = make_response("", 204)
-    resp.headers["HX-Trigger"] = _json.dumps(triggers, ensure_ascii=False)
+    resp.headers["HX-Trigger"] = header_value
     return resp
 
 
