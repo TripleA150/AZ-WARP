@@ -5,12 +5,12 @@
 
 {% block content %}
 <div class="space-y-6"
-     hx-trigger="load, every 60s, refreshAll from:body"
+     id="dashboard-content"
+     hx-trigger="load, refreshAll from:body"
      hx-get="{{ url_for('htmx_status_summary') }}"
      hx-target="this"
      hx-swap="innerHTML">
 
-    {# Первоначальный рендер на сервере, дальше HTMX обновляет #}
     {% include "partials/status_summary.html" %}
 </div>
 {% endblock %}
