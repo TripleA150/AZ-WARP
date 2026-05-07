@@ -7,7 +7,7 @@
 
 <div id="singbox-content"
      hx-get="{{ url_for('htmx_singbox_status') }}"
-     hx-trigger="load, every 60s, refreshSingbox from:body, refreshAll from:body"
+     hx-trigger="load, refreshSingbox from:body, refreshAll from:body"
      hx-swap="innerHTML">
     <div class="bg-surface-900/40 border border-emerald-900/30 rounded-xl p-12 text-center text-emerald-500/60">
         Загрузка...
