@@ -1,6 +1,11 @@
 #!/bin/bash
 set -uo pipefail
 
+# Если stdin не терминал (запущено через curl|bash), пересоединяем к /dev/tty
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec < /dev/tty
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -142,7 +147,16 @@ User=root
 Group=root
 WorkingDirectory=$WEB_DIR
 EnvironmentFile=$WEB_DIR/.env
-ExecStart=$WEB_DIR/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:$BACKEND_PORT --access-logfile - --error-logfile - --timeout 300 app:app
+ExecStart=$WEB_DIR/venv/bin/gunicorn \\
+    --workers 2 \\
+    --threads 8 \\
+    --worker-class gthread \\
+    --bind 127.0.0.1:$BACKEND_PORT \\
+    --access-logfile - \\
+    --error-logfile - \\
+    --timeout 600 \\
+    --graceful-timeout 30 \\
+    app:app
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -151,7 +165,6 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-
 # ===== nginx =====
 
 echo -e "${CYAN}6. Настройка nginx...${NC}"
