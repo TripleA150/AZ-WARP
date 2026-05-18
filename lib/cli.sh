@@ -899,7 +899,8 @@ IPEOF
 # Использование:
 #   warper webpass                          # интерактивно
 #   warper webpass USERNAME PASSWORD        # неинтерактивно
-#   warper webpass --reset                  # удалить БД (создаст admin/admin при следующем старте)
+#   warper webpass --reset                  # сброс к admin/admin
+#   warper webpass --unblock                # сбросить блокировки IP
 cli_webpass() {
     local web_dir="/root/warper/web"
     local users_file="$web_dir/data/users.json"
@@ -915,14 +916,26 @@ cli_webpass() {
         return 1
     fi
 
-    # Режим полного сброса
+    # ===== Режим: только разблокировка IP =====
+    if [ "${1:-}" = "--unblock" ]; then
+        echo -e "${YELLOW}Сброс всех блокировок IP...${NC}"
+        rm -f "$web_dir/data/blocks.json"
+        if systemctl is-active --quiet warper-web 2>/dev/null; then
+            systemctl restart warper-web
+            sleep 1
+        fi
+        echo -e "${GREEN}Готово. Все IP разблокированы.${NC}"
+        return 0
+    fi
+
+    # ===== Режим полного сброса =====
     if [ "${1:-}" = "--reset" ]; then
         echo -e "${YELLOW}Сброс учётных данных и SECRET_KEY...${NC}"
         rm -f "$users_file"
         rm -f "$web_dir/data/secret.key"
         rm -f "$web_dir/data/.init.lock"
+        rm -f "$web_dir/data/blocks.json"
 
-        # Создаём admin/admin сразу через тот же механизм, что и обычный webpass
         echo -e "${CYAN}Создание пользователя admin/admin...${NC}"
         mkdir -p "$web_dir/data"
         chmod 700 "$web_dir/data"
@@ -951,7 +964,6 @@ secret_file = data_dir / "secret.key"
 
 data_dir.mkdir(mode=0o700, exist_ok=True)
 
-# Хешируем admin/admin
 password_hash = bcrypt.generate_password_hash("admin").decode("utf-8")
 
 users = {
@@ -969,7 +981,6 @@ os.chmod(tmp, 0o600)
 tmp.replace(users_file)
 os.chmod(users_file, 0o600)
 
-# Новый SECRET_KEY
 new_secret = secrets.token_hex(32)
 secret_file.write_text(new_secret + "\n", encoding="utf-8")
 os.chmod(secret_file, 0o600)
@@ -993,7 +1004,146 @@ PYEOF
         echo -e "${GREEN}✓ Готово${NC}"
         echo -e "  Логин:  ${CYAN}admin${NC}"
         echo -e "  Пароль: ${CYAN}admin${NC}"
-        echo -e "${YELLOW}СМЕНИТЕ ПАРОЛЬ через настройки или 'warper webpass'!${NC}"
+        echo -e "${YELLOW}СМЕНИТЕ ПАРОЛЬ через 'warper webpass'!${NC}"
         return 0
     fi
+
+    # ===== Получаем логин и пароль =====
+    local new_user="${1:-}"
+    local new_pass="${2:-}"
+
+    # Интерактивный режим: спрашиваем логин
+    if [ -z "$new_user" ]; then
+        echo -e "${CYAN}Смена учётных данных веб-панели WARPER${NC}"
+        echo ""
+        read -r -p "Новый логин [admin]: " new_user
+        new_user="${new_user:-admin}"
+    fi
+
+    # Валидация логина
+    if ! [[ "$new_user" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; then
+        echo -e "${RED}Логин должен быть 3-32 символа: латиница, цифры, _ или -${NC}" >&2
+        return 1
+    fi
+
+    # Интерактивный режим: спрашиваем пароль
+    if [ -z "$new_pass" ]; then
+        while true; do
+            read -r -s -p "Новый пароль (мин. 6 симв.): " new_pass
+            echo ""
+            if [ ${#new_pass} -lt 6 ]; then
+                echo -e "${RED}Пароль слишком короткий${NC}"
+                continue
+            fi
+            read -r -s -p "Подтвердите пароль: " confirm
+            echo ""
+            if [ "$new_pass" != "$confirm" ]; then
+                echo -e "${RED}Пароли не совпадают${NC}"
+                continue
+            fi
+            break
+        done
+    fi
+
+    # Валидация пароля
+    if [ ${#new_pass} -lt 6 ]; then
+        echo -e "${RED}Пароль должен быть минимум 6 символов${NC}" >&2
+        return 1
+    fi
+
+    if [ ${#new_pass} -gt 256 ]; then
+        echo -e "${RED}Пароль слишком длинный (максимум 256)${NC}" >&2
+        return 1
+    fi
+
+    # ===== Сохранение через Python =====
+    mkdir -p "$web_dir/data"
+    chmod 700 "$web_dir/data"
+
+    # Передаём пароль через переменную окружения, чтобы не подставлять в код напрямую
+    # (защита от shell-инъекций при пароле с кавычками/спецсимволами)
+    NEW_USER="$new_user" NEW_PASS="$new_pass" "$venv_python" - <<'PYEOF'
+import json
+import os
+import secrets
+import sys
+from datetime import datetime
+from pathlib import Path
+
+try:
+    from flask_bcrypt import Bcrypt
+    from flask import Flask
+except ImportError as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(2)
+
+username = os.environ.get("NEW_USER", "")
+password = os.environ.get("NEW_PASS", "")
+
+if not username or not password:
+    print("ERROR: empty credentials", file=sys.stderr)
+    sys.exit(1)
+
+app = Flask(__name__)
+bcrypt = Bcrypt(app)
+
+data_dir = Path("/root/warper/web/data")
+users_file = data_dir / "users.json"
+secret_file = data_dir / "secret.key"
+blocks_file = data_dir / "blocks.json"
+
+data_dir.mkdir(mode=0o700, exist_ok=True)
+
+# Хешируем пароль
+password_hash = bcrypt.generate_password_hash(password).decode("utf-8")
+
+# Записываем нового пользователя (старая БД полностью заменяется)
+users = {
+    username: {
+        "password_hash": password_hash,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "last_login": None,
+    }
+}
+
+tmp = users_file.with_suffix(".tmp")
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(users, f, indent=2, ensure_ascii=False)
+os.chmod(tmp, 0o600)
+tmp.replace(users_file)
+os.chmod(users_file, 0o600)
+
+# Ротируем SECRET_KEY чтобы инвалидировать все активные сессии
+new_secret = secrets.token_hex(32)
+secret_file.write_text(new_secret + "\n", encoding="utf-8")
+os.chmod(secret_file, 0o600)
+
+# Сбрасываем блокировки (на всякий случай)
+if blocks_file.exists():
+    blocks_file.unlink()
+
+print("OK")
+PYEOF
+
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo -e "${RED}Не удалось сохранить учётные данные${NC}" >&2
+        return 1
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Учётные данные обновлены${NC}"
+    echo -e "  Логин:  ${CYAN}$new_user${NC}"
+    echo -e "  Пароль: ${CYAN}[скрыт]${NC}"
+
+    # Перезапускаем сервис чтобы подхватить новый SECRET_KEY и сбросить старые сессии
+    if systemctl is-active --quiet warper-web 2>/dev/null; then
+        echo ""
+        echo -e "${YELLOW}Перезапуск warper-web (сбросит активные сессии)...${NC}"
+        systemctl restart warper-web
+        sleep 2
+        echo -e "${GREEN}Готово. Войдите в веб-панель с новыми данными.${NC}"
+    fi
+
+    return 0
 }
