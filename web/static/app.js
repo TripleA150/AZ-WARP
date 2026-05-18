@@ -147,6 +147,18 @@ function initEventHandlers() {
     document.body.addEventListener('refreshDomains', function() { smartReload('refreshDomains'); });
     document.body.addEventListener('refreshIpRanges', function() { smartReload('refreshIpRanges'); });
 
+
+    // Редирект с задержкой (для случаев когда нужно показать toast перед редиректом)
+    document.body.addEventListener('redirectAfter', function(evt) {
+        const detail = evt.detail || {};
+        const url = detail.url || (detail.value && detail.value.url) || '/';
+        const delay = detail.delay || (detail.value && detail.value.delay) || 1000;
+        setTimeout(function() {
+            window.location.href = url;
+        }, delay);
+    });
+
+    
     // Подтверждение через data-confirm
     document.body.addEventListener('htmx:confirm', function(evt) {
         const elt = evt.detail.elt;
