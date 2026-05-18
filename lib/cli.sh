@@ -791,26 +791,38 @@ cli_domains_list() {
 
 # ===== РЕДАКТИРОВАНИЕ ip-ranges.txt =====
 
-# Возвращает содержимое ip-ranges.txt без шапки-инструкции.
-# Сохраняет пользовательские комментарии и пустые строки.
+# Возвращает содержимое ip-ranges.txt без стандартной шапки-инструкции.
+# Шапка определяется по строкам которые содержат типичные фразы шапки.
+# Пользовательские комментарии и пустые строки сохраняются.
 cli_ip_ranges_content() {
     if [ ! -f "$IP_RANGES_FILE" ]; then
         return 0
     fi
 
-    # Удаляем стандартную шапку (всё что между начальными "# Добавление..."
-    # и первой не-комментарийной строкой ИЛИ пустой строкой после блока шапки)
-    awk '
-        BEGIN { skip_header = 1 }
-        skip_header == 1 {
-            # Пропускаем строки шапки: начинаются с # или пустые в начале файла
-            if (/^#/ || /^[[:space:]]*$/) {
-                next
-            }
-            skip_header = 0
-        }
-        { print }
-    ' "$IP_RANGES_FILE"
+    # Точно определяем конец шапки: ищем последнюю строку шапки и выводим всё после неё.
+    # Шапка по умолчанию заканчивается строкой:
+    #   "# После изменения файла выполните: warper ipsync"
+    # Если такой строки нет (старый файл) — берём весь файл как есть.
+
+    local header_end_line
+    header_end_line=$(grep -n '^# После изменения файла выполните' "$IP_RANGES_FILE" 2>/dev/null | head -1 | cut -d: -f1)
+
+    if [ -z "$header_end_line" ]; then
+        # Шапка не найдена — возвращаем весь файл как есть
+        cat "$IP_RANGES_FILE"
+        return 0
+    fi
+
+    # Пропускаем шапку и одну пустую строку после неё (если есть)
+    local skip_lines=$header_end_line
+    # Проверяем, есть ли пустая строка сразу после шапки
+    local next_line
+    next_line=$(sed -n "$((header_end_line + 1))p" "$IP_RANGES_FILE")
+    if [ -z "$next_line" ]; then
+        skip_lines=$((header_end_line + 1))
+    fi
+
+    tail -n +$((skip_lines + 1)) "$IP_RANGES_FILE"
 }
 
 # Заменяет содержимое ip-ranges.txt на переданные строки и синкает.
@@ -820,7 +832,7 @@ cli_ip_ranges_save() {
     local tmp
     tmp=$(mktemp)
 
-    # Пишем шапку
+    # Стандартная шапка - должна точно совпадать с тем что ожидает cli_ip_ranges_content
     cat << 'IPEOF' > "$tmp"
 # Добавление IPv4-адресов для маршрутизации через Warper (Sing-box tun)
 #
@@ -836,29 +848,24 @@ IPEOF
     local valid_count=0
     local raw_line stripped
 
-    # Читаем построчно из stdin
     while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-        # Удаляем CR (на случай если файл с Windows-окончаниями)
         raw_line="${raw_line%$'\r'}"
-
-        # Триммим для проверки типа строки
         stripped=$(echo "$raw_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-        # Пустая строка — сохраняем как есть
+        # Пустая строка - сохраняем
         if [ -z "$stripped" ]; then
             echo "" >> "$tmp"
             continue
         fi
 
-        # Комментарий — сохраняем как есть (с оригинальными отступами)
+        # Комментарий - сохраняем как есть
         if [[ "$stripped" == \#* ]]; then
             echo "$raw_line" >> "$tmp"
             continue
         fi
 
-        # CIDR — валидируем
+        # CIDR - валидируем
         local cidr="$stripped"
-        # Без маски — добавляем /32
         if [[ "$cidr" != */* ]]; then
             cidr="${cidr}/32"
         fi
@@ -877,7 +884,6 @@ IPEOF
     mv "$tmp" "$IP_RANGES_FILE"
     chmod 644 "$IP_RANGES_FILE"
 
-    # Синкаем
     if is_warper_active; then
         sync_ip_ranges >/dev/null 2>&1 || true
     fi
