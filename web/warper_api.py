@@ -300,40 +300,24 @@ def get_user_domains_block() -> str:
 
 def save_user_domains_block(text: str) -> tuple[bool, str]:
     """
-    Сохраняет пользовательский блок domains.txt.
-    Сохраняет пользовательские комментарии (#) и пустые строки.
-    Валидирует только строки-домены.
+    Сохраняет пользовательский блок domains.txt с комментариями.
+    Валидирует только строки-домены, комментарии и пустые строки сохраняет как есть.
     Блоки GEMINI/CHATGPT остаются нетронутыми.
     """
     domains_file = "/root/warper/domains.txt"
 
-    # Парсим вход
+    # Проверяем что все домены валидны (быстрая проверка)
     raw_lines = text.splitlines()
-    out_user_lines: list[str] = []  # сюда складываем пользовательский блок 1:1
-    valid_domains: list[str] = []
     invalid: list[str] = []
-    seen_domains: set[str] = set()
-
+    valid_count = 0
     for raw in raw_lines:
         s = raw.strip()
-        # Пустая строка — сохраняем
-        if not s:
-            out_user_lines.append("")
+        if not s or s.startswith("#"):
             continue
-        # Комментарий — сохраняем (с оригинальными отступами)
-        if s.startswith("#"):
-            out_user_lines.append(raw)
-            continue
-        # Домен — валидируем
-        d = s.lower()
-        if not _validate_domain_format(d):
+        if not _validate_domain_format(s.lower()):
             invalid.append(s)
-            continue
-        if d in seen_domains:
-            continue  # дубликат — молча пропускаем
-        seen_domains.add(d)
-        valid_domains.append(d)
-        out_user_lines.append(d)
+        else:
+            valid_count += 1
 
     if invalid:
         msg = "Некорректные домены: " + ", ".join(invalid[:5])
@@ -341,11 +325,7 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
             msg += f" (и ещё {len(invalid) - 5})"
         return False, msg
 
-    # Обрезаем хвостовые пустые строки в пользовательском блоке
-    while out_user_lines and not out_user_lines[-1].strip():
-        out_user_lines.pop()
-
-    # Читаем существующий файл и сохраняем блоки GEMINI/CHATGPT
+    # Читаем существующий файл, сохраняем шапку и блоки GEMINI/CHATGPT
     gemini_block: list[str] = []
     chatgpt_block: list[str] = []
     if os.path.exists(domains_file):
@@ -380,6 +360,11 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
                 chatgpt_block.append(ln)
 
     # Собираем новый файл
+    # Пользовательский блок берём как есть (text), но обрезаем хвостовые пустые строки
+    user_lines = text.splitlines()
+    while user_lines and not user_lines[-1].strip():
+        user_lines.pop()
+
     out_lines = [
         "# ==========================================",
         "# СПИСОК ДОМЕНОВ ДЛЯ МАРШРУТИЗАЦИИ WARP",
@@ -389,7 +374,7 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
         "",
         "# Пользовательские домены:",
     ]
-    out_lines.extend(out_user_lines)
+    out_lines.extend(user_lines)
     if gemini_block:
         out_lines.append("")
         out_lines.extend(gemini_block)
@@ -403,12 +388,14 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"Ошибка записи: {e}"
 
-    # Запускаем sync
+    # Запускаем обычный sync — теперь rebuild_master_file сохраняет комментарии
     ok_sync, out, err = _run_warper("sync", timeout=120)
     if not ok_sync:
         return False, f"Файл сохранён, но sync упал: {(err or out).strip()}"
 
-    return True, f"Сохранено {len(valid_domains)} доменов, синхронизация выполнена"
+    return True, f"Сохранено {valid_count} доменов, синхронизация выполнена"
+
+
 # ===== IP-подсети =====
 
 def get_ip_ranges(search: str | None = None) -> list[dict[str, str]]:
