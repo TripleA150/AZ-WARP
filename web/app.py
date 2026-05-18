@@ -37,36 +37,7 @@ app = Flask(
 )
 from auth import get_or_create_secret_key
 
-# SECRET_KEY читается из файла при каждом запросе, чтобы ротация ключа
-# (через смену пароля) сразу инвалидировала все активные сессии
-class DynamicSecretKey:
-    """Объект который при чтении возвращает свежий SECRET_KEY из файла."""
-    _cache = None
-    _cache_mtime = 0
-
-    def __str__(self):
-        return self._get()
-
-    def __bytes__(self):
-        return self._get().encode("utf-8")
-
-    def encode(self, *args, **kwargs):
-        return self._get().encode(*args, **kwargs)
-
-    def _get(self):
-        from auth import SECRET_FILE, get_or_create_secret_key
-        try:
-            mtime = SECRET_FILE.stat().st_mtime
-            if mtime != self._cache_mtime or self._cache is None:
-                self._cache = SECRET_FILE.read_text(encoding="utf-8").strip()
-                self._cache_mtime = mtime
-        except (OSError, AttributeError):
-            if self._cache is None:
-                self._cache = get_or_create_secret_key()
-        return self._cache
-
-
-app.config["SECRET_KEY"] = DynamicSecretKey()
+app.config["SECRET_KEY"] = get_or_create_secret_key()
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
