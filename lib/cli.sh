@@ -791,21 +791,36 @@ cli_domains_list() {
 
 # ===== РЕДАКТИРОВАНИЕ ip-ranges.txt =====
 
-# Возвращает содержимое ip-ranges.txt без шапки и комментариев.
+# Возвращает содержимое ip-ranges.txt без шапки-инструкции.
+# Сохраняет пользовательские комментарии и пустые строки.
 cli_ip_ranges_content() {
     if [ ! -f "$IP_RANGES_FILE" ]; then
         return 0
     fi
-    grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$IP_RANGES_FILE"
+
+    # Удаляем стандартную шапку (всё что между начальными "# Добавление..."
+    # и первой не-комментарийной строкой ИЛИ пустой строкой после блока шапки)
+    awk '
+        BEGIN { skip_header = 1 }
+        skip_header == 1 {
+            # Пропускаем строки шапки: начинаются с # или пустые в начале файла
+            if (/^#/ || /^[[:space:]]*$/) {
+                next
+            }
+            skip_header = 0
+        }
+        { print }
+    ' "$IP_RANGES_FILE"
 }
 
 # Заменяет содержимое ip-ranges.txt на переданные строки и синкает.
-# Принимает CIDR из stdin (по строке).
+# Сохраняет пользовательские комментарии (#...) и пустые строки.
+# Принимает строки из stdin.
 cli_ip_ranges_save() {
     local tmp
     tmp=$(mktemp)
 
-    # Сохраняем шапку
+    # Пишем шапку
     cat << 'IPEOF' > "$tmp"
 # Добавление IPv4-адресов для маршрутизации через Warper (Sing-box tun)
 #
@@ -814,34 +829,50 @@ cli_ip_ranges_save() {
 #
 # Строки начинающиеся с # - комментарии, не обрабатываются.
 # После изменения файла выполните: warper ipsync
+
 IPEOF
 
-    # Валидируем и добавляем CIDR из stdin
     local invalid_count=0
     local valid_count=0
-    while IFS= read -r line; do
-        line=$(echo "$line" | tr -d '[:space:]')
-        [ -z "$line" ] && continue
-        [[ "$line" == \#* ]] && continue
+    local raw_line stripped
 
-        # Если без маски - добавляем /32
-        if [[ "$line" != */* ]]; then
-            line="${line}/32"
+    # Читаем построчно из stdin
+    while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+        # Удаляем CR (на случай если файл с Windows-окончаниями)
+        raw_line="${raw_line%$'\r'}"
+
+        # Триммим для проверки типа строки
+        stripped=$(echo "$raw_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Пустая строка — сохраняем как есть
+        if [ -z "$stripped" ]; then
+            echo "" >> "$tmp"
+            continue
         fi
 
-        if validate_cidr "$line" >/dev/null 2>&1; then
-            echo "$line" >> "$tmp"
+        # Комментарий — сохраняем как есть (с оригинальными отступами)
+        if [[ "$stripped" == \#* ]]; then
+            echo "$raw_line" >> "$tmp"
+            continue
+        fi
+
+        # CIDR — валидируем
+        local cidr="$stripped"
+        # Без маски — добавляем /32
+        if [[ "$cidr" != */* ]]; then
+            cidr="${cidr}/32"
+        fi
+
+        if validate_cidr "$cidr" >/dev/null 2>&1; then
+            echo "$cidr" >> "$tmp"
             valid_count=$((valid_count + 1))
         else
             invalid_count=$((invalid_count + 1))
+            rm -f "$tmp"
+            echo "ERROR: invalid CIDR: $stripped" >&2
+            return 1
         fi
     done
-
-    if [ "$invalid_count" -gt 0 ]; then
-        rm -f "$tmp"
-        echo "ERROR: $invalid_count invalid CIDR entries" >&2
-        return 1
-    fi
 
     mv "$tmp" "$IP_RANGES_FILE"
     chmod 644 "$IP_RANGES_FILE"
