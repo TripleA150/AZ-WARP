@@ -317,7 +317,7 @@ def verify_credentials(username: str, password: str) -> tuple[bool, str]:
 
 
 def update_credentials(new_username: str, new_password: str, current_username: str) -> tuple[bool, str]:
-    """Меняет логин и пароль текущего пользователя."""
+    """Меняет логин и пароль текущего пользователя + ротирует SECRET_KEY."""
     new_username = new_username.strip()
 
     if not LOGIN_RE.match(new_username):
@@ -349,4 +349,7 @@ def update_credentials(new_username: str, new_password: str, current_username: s
     ip = _get_client_ip()
     _audit_log("credentials_changed", ip, current_username, f"new={new_username}")
 
-    return True, "Учётные данные обновлены. Войдите заново."
+    # Ротируем SECRET_KEY — все активные сессии станут невалидными
+    rotate_secret_key()
+
+    return True, "Учётные данные обновлены. Сервис перезапускается, войдите заново."
