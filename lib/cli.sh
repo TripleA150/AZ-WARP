@@ -984,6 +984,7 @@ cli_webpass() {
     "$venv_python" - <<PYEOF
 import json
 import os
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -1000,12 +1001,14 @@ bcrypt = Bcrypt(app)
 
 username = "$new_user"
 password = """$new_pass"""
-users_file = Path("$users_file")
+data_dir = Path("$web_dir/data")
+users_file = data_dir / "users.json"
+secret_file = data_dir / "secret.key"
 
 # Создаём папку
-users_file.parent.mkdir(mode=0o700, exist_ok=True)
+data_dir.mkdir(mode=0o700, exist_ok=True)
 
-# Хешируем
+# Хешируем пароль
 password_hash = bcrypt.generate_password_hash(password).decode("utf-8")
 
 users = {
@@ -1016,13 +1019,18 @@ users = {
     }
 }
 
-# Атомарная запись
+# Атомарная запись users.json
 tmp = users_file.with_suffix(".tmp")
 with open(tmp, "w", encoding="utf-8") as f:
     json.dump(users, f, indent=2, ensure_ascii=False)
 os.chmod(tmp, 0o600)
 tmp.replace(users_file)
 os.chmod(users_file, 0o600)
+
+# Ротируем SECRET_KEY чтобы инвалидировать все активные сессии
+new_secret = secrets.token_hex(32)
+secret_file.write_text(new_secret + "\n", encoding="utf-8")
+os.chmod(secret_file, 0o600)
 
 print("OK")
 PYEOF
