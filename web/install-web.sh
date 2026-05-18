@@ -125,17 +125,24 @@ deactivate
 
 # ===== .env =====
 
-echo -e "${CYAN}4. Создание .env...${NC}"
-SECRET_KEY=$(openssl rand -hex 32)
-
+echo -e "${CYAN}4. Создание .env (без секретов)...${NC}"
+# В .env храним только не-секретные параметры.
+# SECRET_KEY автоматически создаётся в web/data/secret.key (chmod 600).
+# Учётные данные мигрируются в web/data/users.json при первом запуске.
 cat > "$WEB_DIR/.env" <<EOF
-SECRET_KEY=$SECRET_KEY
-ADMIN_USER=$ADMIN_USER
-ADMIN_PASSWORD=$ADMIN_PASSWORD
 PORT=$BACKEND_PORT
 DEBUG=false
+# Учётные данные для ПЕРВИЧНОЙ инициализации
+# (после первого запуска переносятся в web/data/users.json
+#  и эти строки можно удалить из .env вручную)
+ADMIN_USER=$ADMIN_USER
+ADMIN_PASSWORD=$ADMIN_PASSWORD
 EOF
 chmod 600 "$WEB_DIR/.env"
+
+# Создаём data/ заранее с правильными правами
+mkdir -p "$WEB_DIR/data"
+chmod 700 "$WEB_DIR/data"
 
 # ===== systemd =====
 
@@ -284,6 +291,18 @@ fi
 # Сохранение пароля
 echo "$ADMIN_PASSWORD" > "$WARPER_DIR/web_admin_pass.txt"
 chmod 600 "$WARPER_DIR/web_admin_pass.txt"
+
+echo -e "${CYAN}9. Запуск инициализации (миграция учётных данных)...${NC}"
+# Даём время сервису запуститься и мигрировать ADMIN_PASSWORD из .env в БД
+sleep 3
+
+# После миграции — затираем ADMIN_PASSWORD из .env
+if [ -f "$WEB_DIR/data/users.json" ]; then
+    sed -i '/^ADMIN_PASSWORD=/d' "$WEB_DIR/.env"
+    sed -i '/^ADMIN_USER=/d' "$WEB_DIR/.env"
+    sed -i '/^# Учётные данные для ПЕРВИЧНОЙ/,/^#  и эти строки можно удалить из .env вручную)$/d' "$WEB_DIR/.env"
+    echo -e "${GREEN}   Учётные данные перенесены в БД, удалены из .env${NC}"
+fi
 
 # ===== Итог =====
 
