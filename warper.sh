@@ -69,7 +69,7 @@ case "${1:-}" in
     # Read-only / быстрые команды - lock не нужен
     status|doctor|iplist|iproutes|logs|domainslist|warpkey|wgconfig|config|\
     add|remove|enable|disable|ipadd|ipremove|autopatch|fullvpn|iproutemode|\
-    ipexport|loglevel|mtu)
+    ipexport|loglevel|mtu|webpass)
         :  # без блокировки — эти команды быстрые, или сами защищаются
         ;;
     *)
@@ -86,7 +86,6 @@ release_lock() { rm -f "$LOCK_FILE"; }
 trap 'release_lock' EXIT
 acquire_lock
 
-# ===== Подключение модулей =====
 # ===== Подключение модулей =====
 WARPER_LIB="$WARPER_DIR/lib"
 WARPER_MENUS="$WARPER_DIR/menus"
@@ -261,6 +260,11 @@ case "${1:-}" in
             save) cli_ip_ranges_save; exit $? ;;
             *)    echo "Использование: warper ipranges list|save"; exit 1 ;;
         esac
+        ;;
+    webpass)
+        shift
+        cli_webpass "$@"
+        exit $?
         ;;
 esac
 
