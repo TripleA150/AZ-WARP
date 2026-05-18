@@ -100,6 +100,22 @@ def get_or_create_secret_key() -> str:
     return new_key
 
 
+def rotate_secret_key() -> str:
+    """
+    Генерирует новый SECRET_KEY и сохраняет в web/data/secret.key.
+    Используется при смене пароля или сбросе сессий.
+    Возвращает новый ключ.
+    """
+    _ensure_data_dir()
+    new_key = secrets.token_hex(32)
+    try:
+        SECRET_FILE.write_text(new_key + "\n", encoding="utf-8")
+        os.chmod(SECRET_FILE, 0o600)
+        logger.info("SECRET_KEY ротирован (все активные сессии будут сброшены)")
+    except OSError as e:
+        logger.error("Не удалось ротировать SECRET_KEY: %s", e)
+    return new_key
+
 def _load_users() -> dict:
     """Читает БД пользователей."""
     if not USERS_FILE.exists():
