@@ -251,8 +251,11 @@ def _validate_domain_format(domain: str) -> bool:
 
 def get_user_domains_block() -> str:
     """
-    Возвращает только пользовательский блок domains.txt
-    (без блоков GEMINI/CHATGPT и комментариев).
+    Возвращает пользовательский блок domains.txt.
+    Включает пользовательские комментарии (#...) и пустые строки.
+    Исключает только:
+      - стандартную шапку файла (начало до "# Пользовательские домены:")
+      - блоки GEMINI/CHATGPT целиком (вместе с маркерами)
     """
     domains_file = "/root/warper/domains.txt"
     if not os.path.exists(domains_file):
@@ -266,80 +269,108 @@ def get_user_domains_block() -> str:
     lines = content.splitlines()
     user_lines: list[str] = []
     in_block = False
+    skip_header = True
+    header_marker = "# Пользовательские домены:"
+
     for ln in lines:
-        if re.match(r"^# --- [A-Z0-9_]+ ---$", ln):
+        # Пропускаем шапку до маркера "# Пользовательские домены:"
+        if skip_header:
+            if ln.strip() == header_marker:
+                skip_header = False
+            continue
+
+        # Игнорируем блоки GEMINI/CHATGPT
+        if re.match(r"^# --- [A-Z0-9_]+ ---$", ln.strip()):
             in_block = True
             continue
-        if re.match(r"^# --- END [A-Z0-9_]+ ---$", ln):
+        if re.match(r"^# --- END [A-Z0-9_]+ ---$", ln.strip()):
             in_block = False
             continue
         if in_block:
             continue
-        # Пропускаем шапку
-        s = ln.strip()
-        if s.startswith("#"):
-            continue
-        if not s:
-            continue
-        user_lines.append(s)
-    return "\n".join(user_lines)
 
+        # Всё остальное (включая комментарии и пустые строки) — пользовательское
+        user_lines.append(ln)
+
+    # Обрезаем хвостовые пустые строки
+    while user_lines and not user_lines[-1].strip():
+        user_lines.pop()
+
+    return "\n".join(user_lines)
 
 def save_user_domains_block(text: str) -> tuple[bool, str]:
     """
-    Сохраняет пользовательские домены, валидирует их,
-    запускает sync. Сохраняет блоки GEMINI/CHATGPT нетронутыми.
+    Сохраняет пользовательский блок domains.txt.
+    Сохраняет пользовательские комментарии (#) и пустые строки.
+    Валидирует только строки-домены.
+    Блоки GEMINI/CHATGPT остаются нетронутыми.
     """
     domains_file = "/root/warper/domains.txt"
 
-    # Парсим строки и валидируем
-    raw_lines = [l.strip() for l in text.splitlines()]
+    # Парсим вход
+    raw_lines = text.splitlines()
+    out_user_lines: list[str] = []  # сюда складываем пользовательский блок 1:1
     valid_domains: list[str] = []
     invalid: list[str] = []
-    seen: set[str] = set()
+    seen_domains: set[str] = set()
 
-    for ln in raw_lines:
-        if not ln or ln.startswith("#"):
+    for raw in raw_lines:
+        s = raw.strip()
+        # Пустая строка — сохраняем
+        if not s:
+            out_user_lines.append("")
             continue
-        d = ln.lower()
+        # Комментарий — сохраняем (с оригинальными отступами)
+        if s.startswith("#"):
+            out_user_lines.append(raw)
+            continue
+        # Домен — валидируем
+        d = s.lower()
         if not _validate_domain_format(d):
-            invalid.append(ln)
+            invalid.append(s)
             continue
-        if d in seen:
-            continue
-        seen.add(d)
+        if d in seen_domains:
+            continue  # дубликат — молча пропускаем
+        seen_domains.add(d)
         valid_domains.append(d)
+        out_user_lines.append(d)
 
     if invalid:
-        return False, f"Некорректные домены: {', '.join(invalid[:5])}" + (
-            f" (и ещё {len(invalid)-5})" if len(invalid) > 5 else ""
-        )
+        msg = "Некорректные домены: " + ", ".join(invalid[:5])
+        if len(invalid) > 5:
+            msg += f" (и ещё {len(invalid) - 5})"
+        return False, msg
 
-    # Читаем существующий файл и сохраняем блоки
+    # Обрезаем хвостовые пустые строки в пользовательском блоке
+    while out_user_lines and not out_user_lines[-1].strip():
+        out_user_lines.pop()
+
+    # Читаем существующий файл и сохраняем блоки GEMINI/CHATGPT
     gemini_block: list[str] = []
     chatgpt_block: list[str] = []
     if os.path.exists(domains_file):
         try:
             with open(domains_file, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
+                existing = f.read().splitlines()
         except OSError:
-            lines = []
+            existing = []
 
         block: str | None = None
-        for ln in lines:
-            if ln.strip() == "# --- GEMINI ---":
+        for ln in existing:
+            stripped = ln.strip()
+            if stripped == "# --- GEMINI ---":
                 block = "gemini"
                 gemini_block.append(ln)
                 continue
-            if ln.strip() == "# --- END GEMINI ---":
+            if stripped == "# --- END GEMINI ---":
                 gemini_block.append(ln)
                 block = None
                 continue
-            if ln.strip() == "# --- CHATGPT ---":
+            if stripped == "# --- CHATGPT ---":
                 block = "chatgpt"
                 chatgpt_block.append(ln)
                 continue
-            if ln.strip() == "# --- END CHATGPT ---":
+            if stripped == "# --- END CHATGPT ---":
                 chatgpt_block.append(ln)
                 block = None
                 continue
@@ -358,7 +389,7 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
         "",
         "# Пользовательские домены:",
     ]
-    out_lines.extend(valid_domains)
+    out_lines.extend(out_user_lines)
     if gemini_block:
         out_lines.append("")
         out_lines.extend(gemini_block)
@@ -378,7 +409,6 @@ def save_user_domains_block(text: str) -> tuple[bool, str]:
         return False, f"Файл сохранён, но sync упал: {(err or out).strip()}"
 
     return True, f"Сохранено {len(valid_domains)} доменов, синхронизация выполнена"
-
 # ===== IP-подсети =====
 
 def get_ip_ranges(search: str | None = None) -> list[dict[str, str]]:
@@ -719,24 +749,22 @@ def get_ip_ranges_content() -> str:
 def save_ip_ranges_content(text: str) -> tuple[bool, str]:
     """
     Сохраняет ip-ranges.txt и запускает sync.
+    Сохраняет пользовательские комментарии (#) и пустые строки.
+    Валидирует только CIDR-строки.
     """
-    # Валидация на стороне Python — быстрее даём ошибку
-    lines = [l.strip() for l in text.splitlines()]
-    valid: list[str] = []
+    lines = text.splitlines()
+    valid_count = 0
     invalid: list[str] = []
-    seen: set[str] = set()
 
-    for ln in lines:
-        if not ln or ln.startswith("#"):
-            continue
-        cidr = ln if "/" in ln else f"{ln}/32"
+    for raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue  # пустые и комментарии пропускаем при валидации
+        cidr = s if "/" in s else f"{s}/32"
         if not _validate_cidr_format(cidr):
-            invalid.append(ln)
-            continue
-        if cidr in seen:
-            continue
-        seen.add(cidr)
-        valid.append(cidr)
+            invalid.append(s)
+        else:
+            valid_count += 1
 
     if invalid:
         msg = "Некорректные CIDR: " + ", ".join(invalid[:5])
@@ -744,8 +772,8 @@ def save_ip_ranges_content(text: str) -> tuple[bool, str]:
             msg += f" (и ещё {len(invalid) - 5})"
         return False, msg
 
-    # Передаём через stdin
-    content = "\n".join(valid) + "\n"
+    # Передаём через stdin как есть — bash сохранит комментарии
+    content = text if text.endswith("\n") else text + "\n"
     try:
         proc = subprocess.run(
             [WARPER_BIN, "ipranges", "save"],
@@ -756,7 +784,7 @@ def save_ip_ranges_content(text: str) -> tuple[bool, str]:
         )
         if proc.returncode != 0:
             return False, (proc.stderr or proc.stdout).strip() or "Ошибка сохранения"
-        return True, f"Сохранено {len(valid)} подсетей"
+        return True, f"Сохранено {valid_count} подсетей"
     except subprocess.TimeoutExpired:
         return False, "Таймаут операции"
     except Exception as e:
