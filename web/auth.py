@@ -40,19 +40,22 @@ ADMIN_PASS_FILE = Path("/root/warper/web_admin_pass.txt")
 MAX_ATTEMPTS = 5
 BLOCK_DURATION = 15 * 60  # 15 минут
 _attempts_lock = Lock()
-_failed_attempts: dict[str, list[float]] = {}  # IP -> [timestamp, ...]
-_blocked_ips: dict[str, float] = {}  # IP -> unblock_at
+_failed_attempts: dict[str, list[float]] = {}
+_blocked_ips: dict[str, float] = {}
 
 # Валидация логина: 3-32 символа, латиница/цифры/_-
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 PASSWORD_MIN_LEN = 6
 PASSWORD_MAX_LEN = 256
 
+# Дефолтные учётные данные при первом запуске (если БД пуста)
+DEFAULT_USER = "admin"
+DEFAULT_PASSWORD = "admin"
+
 
 def _ensure_data_dir() -> None:
     """Создаёт data/ с правильными правами (700)."""
     DATA_DIR.mkdir(mode=0o700, exist_ok=True)
-    # На случай если папка уже была с другими правами
     try:
         os.chmod(DATA_DIR, 0o700)
     except OSError:
@@ -77,7 +80,6 @@ def get_or_create_secret_key() -> str:
     """
     Читает SECRET_KEY из web/data/secret.key или создаёт новый.
     Файл всегда с правами 600.
-    Приоритет: файл → переменная окружения → новый.
     """
     _ensure_data_dir()
 
@@ -89,17 +91,6 @@ def get_or_create_secret_key() -> str:
         except OSError:
             pass
 
-    # Миграция: если есть в .env, переносим в файл
-    env_key = os.environ.get("SECRET_KEY", "").strip()
-    if env_key and len(env_key) >= 32:
-        try:
-            SECRET_FILE.write_text(env_key + "\n", encoding="utf-8")
-            os.chmod(SECRET_FILE, 0o600)
-            return env_key
-        except OSError:
-            return env_key  # хоть так
-
-    # Генерируем новый
     new_key = secrets.token_hex(32)
     try:
         SECRET_FILE.write_text(new_key + "\n", encoding="utf-8")
@@ -110,7 +101,7 @@ def get_or_create_secret_key() -> str:
 
 
 def _load_users() -> dict:
-    """Читает БД пользователей. Возвращает {} если файла нет."""
+    """Читает БД пользователей."""
     if not USERS_FILE.exists():
         return {}
     try:
@@ -121,10 +112,9 @@ def _load_users() -> dict:
 
 
 def _save_users(users: dict) -> bool:
-    """Сохраняет БД пользователей с правами 600."""
+    """Атомарно сохраняет БД с правами 600."""
     _ensure_data_dir()
     try:
-        # Атомарная запись через временный файл
         tmp = USERS_FILE.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(users, f, indent=2, ensure_ascii=False)
@@ -137,55 +127,29 @@ def _save_users(users: dict) -> bool:
         return False
 
 
-def _migrate_from_env() -> None:
+def _ensure_default_user() -> None:
     """
-    Однократная миграция: если БД пуста, но в .env есть ADMIN_USER/ADMIN_PASSWORD —
-    переносим в БД, потом затираем из памяти. После этого пользователь должен
-    удалить пароль из .env вручную (мы выведем warning).
+    Создаёт пользователя admin/admin если БД пуста.
+    Выводит warning в лог.
     """
     users = _load_users()
     if users:
-        return  # уже есть БД, ничего не делаем
+        return
 
-    env_user = os.environ.get("ADMIN_USER", "").strip()
-    env_pass = os.environ.get("ADMIN_PASSWORD", "").strip()
-
-    if not env_user or not env_pass:
-        # Нет данных для миграции — создаём дефолтного admin/admin (требует смены)
-        env_user = env_user or "admin"
-        if not env_pass:
-            env_pass = "admin"
-            logger.warning(
-                "Учётные данные не настроены. Создан admin/admin. "
-                "СМЕНИТЕ ПАРОЛЬ через настройки веб-панели!"
-            )
-
-    if not LOGIN_RE.match(env_user):
-        logger.error("Некорректный ADMIN_USER в .env: %s. Использую 'admin'.", env_user)
-        env_user = "admin"
-
-    # Хешируем (если уже хеш — оставляем)
-    if env_pass.startswith(("$2b$", "$2a$", "$2y$")):
-        pass_hash = env_pass
-    else:
-        pass_hash = bcrypt.generate_password_hash(env_pass).decode("utf-8")
-
+    hashed = bcrypt.generate_password_hash(DEFAULT_PASSWORD).decode("utf-8")
     users = {
-        env_user: {
-            "password_hash": pass_hash,
+        DEFAULT_USER: {
+            "password_hash": hashed,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "last_login": None,
         }
     }
-
-    if _save_users(users):
-        logger.warning(
-            "Учётные данные мигрированы из .env в %s. "
-            "УДАЛИТЕ строки ADMIN_USER и ADMIN_PASSWORD из .env вручную для безопасности.",
-            USERS_FILE,
-        )
-        # Затираем из окружения процесса
-        os.environ.pop("ADMIN_PASSWORD", None)
+    _save_users(users)
+    logger.warning(
+        "БД пользователей не найдена. Создан пользователь %s/%s. "
+        "СМЕНИТЕ ПАРОЛЬ через настройки веб-панели!",
+        DEFAULT_USER, DEFAULT_PASSWORD,
+    )
 
 
 class AdminUser(UserMixin):
@@ -197,7 +161,7 @@ class AdminUser(UserMixin):
 
 
 def init_auth(app: Flask) -> None:
-    """Инициализирует Flask-Login и Flask-Bcrypt + миграцию."""
+    """Инициализирует Flask-Login и Flask-Bcrypt."""
     _ensure_data_dir()
     bcrypt.init_app(app)
     login_manager.init_app(app)
@@ -205,8 +169,8 @@ def init_auth(app: Flask) -> None:
     login_manager.login_message = "Требуется авторизация"
     login_manager.login_message_category = "warning"
 
-    # Миграция из .env при первом запуске
-    _migrate_from_env()
+    # Создаём дефолтного пользователя если БД пуста
+    _ensure_default_user()
 
     @login_manager.user_loader
     def load_user(user_id: str) -> AdminUser | None:
@@ -222,12 +186,10 @@ def init_auth(app: Flask) -> None:
 
 def _cleanup_old_attempts(now: float) -> None:
     """Удаляет старые попытки и истёкшие блокировки."""
-    # Чистим блокировки
     expired = [ip for ip, until in _blocked_ips.items() if until <= now]
     for ip in expired:
         del _blocked_ips[ip]
 
-    # Чистим попытки старше окна
     window = BLOCK_DURATION
     for ip in list(_failed_attempts.keys()):
         _failed_attempts[ip] = [t for t in _failed_attempts[ip] if now - t < window]
@@ -246,10 +208,7 @@ def is_ip_blocked(ip: str) -> tuple[bool, int]:
 
 
 def _register_failed_attempt(ip: str) -> tuple[int, bool]:
-    """
-    Регистрирует неудачную попытку.
-    Возвращает (попыток_сделано, заблокирован_сейчас).
-    """
+    """Регистрирует неудачную попытку."""
     with _attempts_lock:
         now = time.time()
         _cleanup_old_attempts(now)
@@ -263,43 +222,29 @@ def _register_failed_attempt(ip: str) -> tuple[int, bool]:
 
 
 def _clear_attempts(ip: str) -> None:
-    """Сбрасывает счётчик попыток для IP (при успешном входе)."""
     with _attempts_lock:
         _failed_attempts.pop(ip, None)
 
 
 def _get_client_ip() -> str:
-    """Получает реальный IP клиента (с учётом X-Forwarded-For от nginx)."""
     xff = request.headers.get("X-Forwarded-For", "")
     if xff:
-        # Берём первый IP из цепочки
         return xff.split(",")[0].strip()
     return request.remote_addr or "unknown"
 
 
-# ===== Валидация и проверка =====
-
-def _safe_str_compare(a: str, b: str) -> bool:
-    """Сравнение строк за константное время (защита от timing-атак)."""
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
-
+# ===== Проверка =====
 
 def verify_credentials(username: str, password: str) -> tuple[bool, str]:
-    """
-    Проверяет логин и пароль.
-    Возвращает (успех, сообщение_об_ошибке_если_не_успех).
-    Учитывает brute-force защиту.
-    """
+    """Проверяет логин и пароль с защитой от brute-force и timing-атак."""
     ip = _get_client_ip()
 
-    # Проверка блокировки
     blocked, seconds_left = is_ip_blocked(ip)
     if blocked:
         minutes = (seconds_left + 59) // 60
         _audit_log("blocked_attempt", ip, username)
         return False, f"Слишком много попыток. Попробуйте через {minutes} мин."
 
-    # Валидация формата (не выдаём конкретику, чтобы не помогать атакующему)
     if not username or not password:
         _register_failed_attempt(ip)
         _audit_log("empty_credentials", ip)
@@ -316,12 +261,10 @@ def verify_credentials(username: str, password: str) -> tuple[bool, str]:
         _audit_log("invalid_password_length", ip, username)
         return False, "Неверный логин или пароль"
 
-    # Загружаем пользователя
     users = _load_users()
     user_data = users.get(username)
 
-    # Чтобы атакующий не мог различить "юзера нет" и "пароль неверный" по времени,
-    # всегда выполняем bcrypt-проверку (даже если юзера нет — с фейковым хешем).
+    # Защита от timing-атак: всегда выполняем bcrypt
     fake_hash = "$2b$12$fakefakefakefakefakefakefakefakefakefakefakefakefakefakefa"
     stored_hash = user_data["password_hash"] if user_data else fake_hash
 
@@ -339,16 +282,14 @@ def verify_credentials(username: str, password: str) -> tuple[bool, str]:
         remaining = MAX_ATTEMPTS - attempts
         return False, f"Неверный логин или пароль (осталось попыток: {remaining})"
 
-    # Успех — обновляем last_login
+    # Успех
     user_data["last_login"] = datetime.now().isoformat(timespec="seconds")
     users[username] = user_data
     _save_users(users)
 
-    # Сбрасываем счётчик попыток
     _clear_attempts(ip)
     _audit_log("login_success", ip, username)
 
-    # Удаляем web_admin_pass.txt при первом успешном входе
     if ADMIN_PASS_FILE.exists():
         try:
             ADMIN_PASS_FILE.unlink()
@@ -360,10 +301,7 @@ def verify_credentials(username: str, password: str) -> tuple[bool, str]:
 
 
 def update_credentials(new_username: str, new_password: str, current_username: str) -> tuple[bool, str]:
-    """
-    Меняет логин и пароль текущего пользователя.
-    Удаляет старого пользователя и создаёт нового.
-    """
+    """Меняет логин и пароль текущего пользователя."""
     new_username = new_username.strip()
 
     if not LOGIN_RE.match(new_username):
@@ -377,13 +315,11 @@ def update_credentials(new_username: str, new_password: str, current_username: s
 
     users = _load_users()
 
-    # Хешируем новый пароль
     try:
         new_hash = bcrypt.generate_password_hash(new_password).decode("utf-8")
     except Exception as e:
         return False, f"Ошибка хеширования: {e}"
 
-    # Удаляем текущего, создаём нового
     users.pop(current_username, None)
     users[new_username] = {
         "password_hash": new_hash,
