@@ -118,6 +118,7 @@ if [ ! -d "$WARPER_LIB" ] || [ ! -f "$WARPER_LIB/utils.sh" ]; then
     exit 0
 fi
 
+# Обязательные модули - без них warper не работает
 for _lib in \
     "$WARPER_LIB/utils.sh" \
     "$WARPER_LIB/config.sh" \
@@ -133,7 +134,6 @@ for _lib in \
     "$WARPER_MENUS/settings.sh" \
     "$WARPER_MENUS/singbox-menu.sh" \
     "$WARPER_MENUS/ip-menu.sh" \
-    "$WARPER_MENUS/web-menu.sh" \
     "$WARPER_MENUS/main.sh"
 do
     if [ ! -f "$_lib" ]; then
@@ -144,6 +144,24 @@ do
     source "$_lib"
 done
 unset _lib
+
+# Опциональные модули - подгружаем если есть, попытаемся скачать если нет
+for _opt_module in "$WARPER_MENUS/web-menu.sh"; do
+    if [ ! -f "$_opt_module" ]; then
+        # Пытаемся скачать тихо (если нет интернета - не критично)
+        local_name=$(basename "$_opt_module" .sh)
+        if curl -fsSL --connect-timeout 5 \
+            "$REPO_URL/menus/${local_name}.sh?t=$(date +%s)" \
+            -o "$_opt_module" 2>/dev/null; then
+            chmod 644 "$_opt_module"
+        fi
+    fi
+    if [ -f "$_opt_module" ]; then
+        # shellcheck disable=SC1090
+        source "$_opt_module"
+    fi
+done
+unset _opt_module
 
 # ===== Инициализация файлов =====
 if [ ! -f "$MASTER_FILE" ]; then
