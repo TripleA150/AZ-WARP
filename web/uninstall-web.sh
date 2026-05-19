@@ -37,6 +37,5 @@ rm -rf /etc/nginx/ssl/warper-web.*
 systemctl reload nginx 2>/dev/null
 
 rm -rf /root/warper/web
-rm -f /root/warper/web_admin_pass.txt
 
 echo -e "${GREEN}✓ Веб-панель удалена${NC}"
