@@ -113,7 +113,7 @@ update_warper() {
 
     # Модули menus/
     mkdir -p "$tmpdir/menus"
-    for _menufile in main settings singbox-menu ip-menu; do
+    for _menufile in main settings singbox-menu ip-menu web-menu; do
         download_file_safe "$REPO_URL/menus/${_menufile}.sh" \
             "$tmpdir/menus/${_menufile}.sh" "menus/${_menufile}.sh" || \
             { rm -rf "$tmpdir" "$backupdir"; return 1; }
