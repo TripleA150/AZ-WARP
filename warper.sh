@@ -133,7 +133,7 @@ for _lib in \
     "$WARPER_MENUS/settings.sh" \
     "$WARPER_MENUS/singbox-menu.sh" \
     "$WARPER_MENUS/ip-menu.sh" \
-    "$WARPER_MENUS/web-menu.sh" \    
+    "$WARPER_MENUS/web-menu.sh" \
     "$WARPER_MENUS/main.sh"
 do
     if [ ! -f "$_lib" ]; then
