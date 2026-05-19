@@ -307,37 +307,38 @@ web_action_uninstall() {
     echo -e "  • nginx-конфиг и SSL-сертификаты"
     echo -e "  • Папка $WEB_DIR (включая БД пользователей)"
     echo ""
-    read -r -e -p "Точно удалить? Введите 'YES' для подтверждения: " confirm
-    if [ "$confirm" != "YES" ]; then
+    read -r -e -p "Точно удалить? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}Отмена.${NC}"
         sleep 1
         return
     fi
 
-    if [ -f "/tmp/warper-uninstall-web.sh" ]; then
-        rm -f /tmp/warper-uninstall-web.sh
-    fi
-    if ! curl -sfSL "$REPO_URL/web/uninstall-web.sh?t=$(date +%s)" -o /tmp/warper-uninstall-web.sh; then
-        # Если не удалось скачать — выполним удаление встроенным способом
-        echo -e "${YELLOW}Не удалось скачать uninstaller, выполняю встроенное удаление...${NC}"
-        systemctl stop "$WEB_SERVICE" 2>/dev/null
-        systemctl disable "$WEB_SERVICE" 2>/dev/null
-        rm -f "/etc/systemd/system/${WEB_SERVICE}.service"
-        systemctl daemon-reload
-        rm -f /etc/nginx/sites-enabled/warper-web
-        rm -f /etc/nginx/sites-available/warper-web
-        rm -rf /etc/nginx/ssl/warper-web.*
-        systemctl reload nginx 2>/dev/null
-        rm -rf "$WEB_DIR"
-        rm -f /root/warper/web_admin_pass.txt
-        echo -e "${GREEN}✓ Веб-панель удалена.${NC}"
-    else
-        chmod +x /tmp/warper-uninstall-web.sh
-        # Через yes пропускаем подтверждение в скрипте
-        echo "y" | bash /tmp/warper-uninstall-web.sh
-        rm -f /tmp/warper-uninstall-web.sh
+    # Удаляем встроенным способом (без скачивания uninstall-web.sh)
+    echo ""
+    echo -e "${CYAN}Останавливаю сервис...${NC}"
+    systemctl stop "$WEB_SERVICE" 2>/dev/null || true
+    systemctl disable "$WEB_SERVICE" 2>/dev/null || true
+
+    echo -e "${CYAN}Удаляю systemd-юнит...${NC}"
+    rm -f "/etc/systemd/system/${WEB_SERVICE}.service"
+    systemctl daemon-reload
+
+    echo -e "${CYAN}Удаляю nginx-конфиг...${NC}"
+    rm -f /etc/nginx/sites-enabled/warper-web
+    rm -f /etc/nginx/sites-available/warper-web
+    rm -f /etc/nginx/ssl/warper-web.crt
+    rm -f /etc/nginx/ssl/warper-web.key
+
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
     fi
 
+    echo -e "${CYAN}Удаляю файлы веб-панели...${NC}"
+    rm -rf "$WEB_DIR"
+
+    echo ""
+    echo -e "${GREEN}✓ Веб-панель удалена${NC}"
     echo ""
     read -r -p "Нажмите Enter..."
 }
