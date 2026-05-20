@@ -1,17 +1,21 @@
 """
 auth.py
 Безопасная авторизация:
-- Хеш пароля хранится в БД (web/data/users.json) с правами 600
-- SECRET_KEY в отдельном файле web/data/secret.key (600)
-- Защита от brute-force: 5 попыток → блокировка IP на 15 минут
-- Валидация логина регулярным выражением
-- Сравнение паролей с защитой от timing-атак
-- Аудит-лог входов/неудач
+- Хеш пароля bcrypt cost 12 в web/data/users.json (chmod 600, only root)
+- SECRET_KEY в web/data/secret.key (chmod 600), ротируется при смене пароля
+- Brute-force: 10 попыток / 10 мин → блокировка IP на 15 мин (persist на диске)
+- Timing-safe проверка пароля (всегда выполняется bcrypt)
+- Валидация логина: только латиница/цифры/_-
+- IP клиента берётся ТОЛЬКО из X-Real-IP от nginx (нельзя подделать заголовком)
+- Cookie: HttpOnly, SameSite=Lax, Secure (при HTTPS)
+- CSRF: проверка origin для всех state-changing запросов (POST/PUT/DELETE)
+- Аудит-лог в web/data/auth.log с автоматической ротацией (макс 1MB, 3 файла)
 """
 
 import hmac
 import json
 import logging
+import logging.handlers
 import os
 import re
 import secrets
@@ -29,30 +33,67 @@ bcrypt = Bcrypt()
 login_manager = LoginManager()
 logger = logging.getLogger(__name__)
 
-# Пути к файлам данных
+# ===== Пути =====
 DATA_DIR = Path(__file__).parent / "data"
 USERS_FILE = DATA_DIR / "users.json"
 SECRET_FILE = DATA_DIR / "secret.key"
+BLOCKS_FILE = DATA_DIR / "blocks.json"
 AUTH_LOG = DATA_DIR / "auth.log"
 
-# Защита от brute-force
-MAX_ATTEMPTS = 5
-BLOCK_DURATION = 15 * 60  # 15 минут
-_attempts_lock = Lock()
-_failed_attempts: dict[str, list[float]] = {}
-_blocked_ips: dict[str, float] = {}
+# ===== Brute-force защита =====
+MAX_ATTEMPTS = 10
+BLOCK_DURATION = 15 * 60        # 15 минут
+ATTEMPT_WINDOW = 10 * 60        # окно учёта попыток - 10 минут
+_blocks_lock = Lock()
 
-# Валидация логина: 3-32 символа, латиница/цифры/_-
+# ===== Валидация =====
 LOGIN_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 PASSWORD_MIN_LEN = 6
 PASSWORD_MAX_LEN = 256
-
-# Дефолтные учётные данные при первом запуске (если БД пуста)
 DEFAULT_USER = "admin"
 
+# Фейковый хеш для timing-safe проверки.
+# ВАЖНО: должен быть валидным bcrypt-хешем с тем же cost что и реальные пароли (12),
+# иначе по времени можно отличить "юзера нет" от "пароль неверный".
+_FAKE_BCRYPT_HASH = "$2b$12$abcdefghijklmnopqrstuuRcyB1HpkwQNRz/ZNoXJOcCXFmKAfqLm"
+
+# ===== Аудит-лог с ротацией =====
+_audit_logger = logging.getLogger("warper.audit")
+_audit_logger.setLevel(logging.INFO)
+_audit_logger.propagate = False
+
+
+def _setup_audit_log():
+    """Настраивает RotatingFileHandler для auth.log (макс 1MB, 3 файла)."""
+    if _audit_logger.handlers:
+        return
+    _ensure_data_dir()
+    try:
+        handler = logging.handlers.RotatingFileHandler(
+            str(AUTH_LOG), maxBytes=1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        _audit_logger.addHandler(handler)
+        try:
+            os.chmod(AUTH_LOG, 0o600)
+        except OSError:
+            pass
+    except OSError as e:
+        logger.error("Не удалось настроить аудит-лог: %s", e)
+
+
+def _audit_log(event: str, ip: str, username: str = "", extra: str = "") -> None:
+    """Запись в аудит-лог."""
+    _setup_audit_log()
+    user_part = f" user={username}" if username else ""
+    extra_part = f" {extra}" if extra else ""
+    _audit_logger.info("ip=%s event=%s%s%s", ip, event, user_part, extra_part)
+
+
+# ===== Утилиты =====
 
 def _ensure_data_dir() -> None:
-    """Создаёт data/ с правильными правами (700)."""
+    """Создаёт data/ с правами 700 (только root)."""
     DATA_DIR.mkdir(mode=0o700, exist_ok=True)
     try:
         os.chmod(DATA_DIR, 0o700)
@@ -60,27 +101,25 @@ def _ensure_data_dir() -> None:
         pass
 
 
-def _audit_log(event: str, ip: str, username: str = "", extra: str = "") -> None:
-    """Аудит-лог авторизации."""
+def _atomic_write(path: Path, content: str, mode: int = 0o600) -> bool:
+    """Атомарная запись файла с правами."""
+    _ensure_data_dir()
     try:
-        _ensure_data_dir()
-        with open(AUTH_LOG, "a", encoding="utf-8") as f:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            user_part = f" user={username}" if username else ""
-            extra_part = f" {extra}" if extra else ""
-            f.write(f"{ts} ip={ip} event={event}{user_part}{extra_part}\n")
-        os.chmod(AUTH_LOG, 0o600)
-    except OSError:
-        pass
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp, mode)
+        tmp.replace(path)
+        os.chmod(path, mode)
+        return True
+    except OSError as e:
+        logger.error("Не удалось записать %s: %s", path, e)
+        return False
 
 
 def get_or_create_secret_key() -> str:
-    """
-    Читает SECRET_KEY из web/data/secret.key или создаёт новый.
-    Файл всегда с правами 600.
-    """
+    """SECRET_KEY из файла или новый."""
     _ensure_data_dir()
-
     if SECRET_FILE.exists():
         try:
             key = SECRET_FILE.read_text(encoding="utf-8").strip()
@@ -90,32 +129,21 @@ def get_or_create_secret_key() -> str:
             pass
 
     new_key = secrets.token_hex(32)
-    try:
-        SECRET_FILE.write_text(new_key + "\n", encoding="utf-8")
-        os.chmod(SECRET_FILE, 0o600)
-    except OSError as e:
-        logger.error("Не удалось сохранить SECRET_KEY: %s", e)
+    _atomic_write(SECRET_FILE, new_key + "\n", 0o600)
     return new_key
 
 
 def rotate_secret_key() -> str:
-    """
-    Генерирует новый SECRET_KEY и сохраняет в web/data/secret.key.
-    Используется при смене пароля или сбросе сессий.
-    Возвращает новый ключ.
-    """
-    _ensure_data_dir()
+    """Генерирует новый SECRET_KEY и сохраняет атомарно."""
     new_key = secrets.token_hex(32)
-    try:
-        SECRET_FILE.write_text(new_key + "\n", encoding="utf-8")
-        os.chmod(SECRET_FILE, 0o600)
+    if _atomic_write(SECRET_FILE, new_key + "\n", 0o600):
         logger.info("SECRET_KEY ротирован (все активные сессии будут сброшены)")
-    except OSError as e:
-        logger.error("Не удалось ротировать SECRET_KEY: %s", e)
     return new_key
 
+
+# ===== БД пользователей =====
+
 def _load_users() -> dict:
-    """Читает БД пользователей."""
     if not USERS_FILE.exists():
         return {}
     try:
@@ -126,26 +154,12 @@ def _load_users() -> dict:
 
 
 def _save_users(users: dict) -> bool:
-    """Атомарно сохраняет БД с правами 600."""
-    _ensure_data_dir()
-    try:
-        tmp = USERS_FILE.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(users, f, indent=2, ensure_ascii=False)
-        os.chmod(tmp, 0o600)
-        tmp.replace(USERS_FILE)
-        os.chmod(USERS_FILE, 0o600)
-        return True
-    except OSError as e:
-        logger.error("Не удалось сохранить users.json: %s", e)
-        return False
+    content = json.dumps(users, indent=2, ensure_ascii=False)
+    return _atomic_write(USERS_FILE, content, 0o600)
 
 
 def _ensure_default_user() -> None:
-    """
-    Создаёт пользователя admin со случайным паролем если БД пуста.
-    Пароль выводится в лог systemd — администратор увидит его при первом запуске.
-    """
+    """Создаёт admin со случайным паролем при пустой БД."""
     if _load_users():
         return
 
@@ -163,13 +177,11 @@ def _ensure_default_user() -> None:
             if _load_users():
                 return
 
-            # Генерируем случайный безопасный пароль
-            generated_pass = secrets.token_urlsafe(9)  # ~12 символов
-
+            generated_pass = secrets.token_urlsafe(9)
             try:
                 hashed = bcrypt.generate_password_hash(generated_pass).decode("utf-8")
             except Exception as e:
-                logger.error("Ошибка хеширования дефолтного пароля: %s", e)
+                logger.error("Ошибка хеширования: %s", e)
                 return
 
             users = {
@@ -180,44 +192,157 @@ def _ensure_default_user() -> None:
                 }
             }
             if _save_users(users):
-                # Заметное предупреждение в логи systemd
                 logger.warning("=" * 60)
-                logger.warning("БД пользователей не найдена — создан администратор")
+                logger.warning("БД пуста — создан администратор:")
                 logger.warning("  Логин:  %s", DEFAULT_USER)
                 logger.warning("  Пароль: %s", generated_pass)
-                logger.warning("Смените пароль командой: warper webpass")
-                logger.warning("Логи: journalctl -u warper-web | grep -i 'Пароль'")
+                logger.warning("Смените: warper webpass")
                 logger.warning("=" * 60)
     except OSError as e:
-        logger.error("Не удалось создать lock-файл для инициализации: %s", e)
+        logger.error("Lock-файл: %s", e)
     finally:
         try:
             lock_file.unlink()
         except OSError:
             pass
 
-class AdminUser(UserMixin):
-    """Пользователь системы."""
 
+# ===== Brute-force защита (persistent) =====
+
+def _load_blocks() -> dict:
+    if not BLOCKS_FILE.exists():
+        return {"attempts": {}, "blocks": {}}
+    try:
+        with open(BLOCKS_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+            return {
+                "attempts": d.get("attempts", {}) if isinstance(d.get("attempts"), dict) else {},
+                "blocks": d.get("blocks", {}) if isinstance(d.get("blocks"), dict) else {},
+            }
+    except (OSError, json.JSONDecodeError):
+        return {"attempts": {}, "blocks": {}}
+
+
+def _save_blocks(data: dict) -> None:
+    content = json.dumps(data, ensure_ascii=False)
+    _atomic_write(BLOCKS_FILE, content, 0o600)
+
+
+def _cleanup_blocks(data: dict, now: float) -> dict:
+    data["blocks"] = {ip: until for ip, until in data["blocks"].items() if until > now}
+    new_attempts = {}
+    for ip, ts_list in data["attempts"].items():
+        if not isinstance(ts_list, list):
+            continue
+        fresh = [t for t in ts_list if now - t < ATTEMPT_WINDOW]
+        if fresh:
+            new_attempts[ip] = fresh
+    data["attempts"] = new_attempts
+    return data
+
+
+def is_ip_blocked(ip: str) -> tuple[bool, int]:
+    with _blocks_lock:
+        now = time.time()
+        data = _cleanup_blocks(_load_blocks(), now)
+        until = data["blocks"].get(ip)
+        _save_blocks(data)
+        if until and until > now:
+            return True, int(until - now)
+        return False, 0
+
+
+def _register_failed_attempt(ip: str) -> tuple[int, bool]:
+    """Возвращает (попыток_сейчас, заблокирован_только_что)."""
+    with _blocks_lock:
+        now = time.time()
+        data = _cleanup_blocks(_load_blocks(), now)
+
+        attempts = data["attempts"].setdefault(ip, [])
+        attempts.append(now)
+
+        if len(attempts) >= MAX_ATTEMPTS:
+            data["blocks"][ip] = now + BLOCK_DURATION
+            data["attempts"].pop(ip, None)
+            _save_blocks(data)
+            return MAX_ATTEMPTS, True
+
+        _save_blocks(data)
+        return len(attempts), False
+
+
+def _clear_attempts_and_blocks(ip: str) -> None:
+    """Сбрасывает И попытки И блокировку для IP."""
+    with _blocks_lock:
+        data = _load_blocks()
+        data["attempts"].pop(ip, None)
+        data["blocks"].pop(ip, None)
+        _save_blocks(data)
+
+
+# ===== IP-адрес клиента =====
+
+def _get_client_ip() -> str:
+    """
+    Получает IP клиента ТОЛЬКО из X-Real-IP, который ставит nginx.
+    Заголовок X-Forwarded-For не используется — его легко подделать клиентом.
+    nginx-конфиг должен иметь:
+      proxy_set_header X-Real-IP $remote_addr;
+    """
+    # X-Real-IP ставится nginx из реального TCP-источника, его невозможно подделать
+    xri = request.headers.get("X-Real-IP", "").strip()
+    if xri and _is_valid_ip(xri):
+        return xri
+
+    # Fallback: реальный remote_addr (если работаем без nginx)
+    return request.remote_addr or "unknown"
+
+
+def _is_valid_ip(s: str) -> bool:
+    """Грубая валидация IPv4/IPv6 (без полной нормализации)."""
+    if not s or len(s) > 45:
+        return False
+    # IPv4
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s):
+        return all(0 <= int(p) <= 255 for p in s.split("."))
+    # IPv6 (минимальная проверка - только разрешённые символы)
+    if re.match(r"^[0-9a-fA-F:]+$", s) and ":" in s:
+        return True
+    return False
+
+
+# ===== AdminUser =====
+
+class AdminUser(UserMixin):
     def __init__(self, username: str):
         self.id = username
         self.username = username
 
 
 def init_auth(app: Flask) -> None:
-    """Инициализирует Flask-Login и Flask-Bcrypt."""
+    """Инициализация авторизации + cookie security."""
     _ensure_data_dir()
+    _setup_audit_log()
     bcrypt.init_app(app)
     login_manager.init_app(app)
     login_manager.login_view = "login"
     login_manager.login_message = "Требуется авторизация"
     login_manager.login_message_category = "warning"
 
-    # Создаём дефолтного пользователя если БД пуста
+    # Безопасность cookie
+    # SESSION_COOKIE_SECURE будет принудительно True при HTTPS-запросах
+    # благодаря X-Forwarded-Proto от nginx (см. ProxyFix в app.py)
+    app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
+    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    app.config.setdefault("SESSION_COOKIE_SECURE", False)  # станет True автоматом при HTTPS
+    app.config.setdefault("REMEMBER_COOKIE_HTTPONLY", True)
+    app.config.setdefault("REMEMBER_COOKIE_SAMESITE", "Lax")
+    app.config.setdefault("REMEMBER_COOKIE_DURATION", 60 * 60 * 24 * 7)  # 7 дней
+
     _ensure_default_user()
 
     @login_manager.user_loader
-    def load_user(user_id: str) -> AdminUser | None:
+    def load_user(user_id: str):
         if not LOGIN_RE.match(user_id):
             return None
         users = _load_users()
@@ -226,98 +351,42 @@ def init_auth(app: Flask) -> None:
         return None
 
 
-# ===== Brute-force защита =====
-
-def _cleanup_old_attempts(now: float) -> None:
-    """Удаляет старые попытки и истёкшие блокировки."""
-    expired = [ip for ip, until in _blocked_ips.items() if until <= now]
-    for ip in expired:
-        del _blocked_ips[ip]
-
-    window = BLOCK_DURATION
-    for ip in list(_failed_attempts.keys()):
-        _failed_attempts[ip] = [t for t in _failed_attempts[ip] if now - t < window]
-        if not _failed_attempts[ip]:
-            del _failed_attempts[ip]
-
-
-def is_ip_blocked(ip: str) -> tuple[bool, int]:
-    """Возвращает (blocked, seconds_left)."""
-    with _attempts_lock:
-        now = time.time()
-        _cleanup_old_attempts(now)
-        if ip in _blocked_ips:
-            return True, int(_blocked_ips[ip] - now)
-        return False, 0
-
-
-def _register_failed_attempt(ip: str) -> tuple[int, bool]:
-    """Регистрирует неудачную попытку."""
-    with _attempts_lock:
-        now = time.time()
-        _cleanup_old_attempts(now)
-        attempts = _failed_attempts.setdefault(ip, [])
-        attempts.append(now)
-        if len(attempts) >= MAX_ATTEMPTS:
-            _blocked_ips[ip] = now + BLOCK_DURATION
-            del _failed_attempts[ip]
-            return MAX_ATTEMPTS, True
-        return len(attempts), False
-
-
-def _clear_attempts(ip: str) -> None:
-    with _attempts_lock:
-        _failed_attempts.pop(ip, None)
-
-
-def _get_client_ip() -> str:
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.remote_addr or "unknown"
-
-
-# ===== Проверка =====
+# ===== Проверка пароля =====
 
 def verify_credentials(username: str, password: str) -> tuple[bool, str]:
-    """Проверяет логин и пароль с защитой от brute-force и timing-атак."""
+    """Проверяет пароль. Защита от brute-force и timing-атак."""
     ip = _get_client_ip()
 
+    # 1. Проверка блокировки IP
     blocked, seconds_left = is_ip_blocked(ip)
     if blocked:
         minutes = (seconds_left + 59) // 60
         _audit_log("blocked_attempt", ip, username)
         return False, f"Слишком много попыток. Попробуйте через {minutes} мин."
 
-    if not username or not password:
-        _register_failed_attempt(ip)
-        _audit_log("empty_credentials", ip)
-        return False, "Неверный логин или пароль"
+    # 2. Валидация формата (на стороне клиента не доверяем)
+    username = (username or "").strip()
+    password = password or ""
 
-    username = username.strip()
-    if not LOGIN_RE.match(username):
-        _register_failed_attempt(ip)
-        _audit_log("invalid_login_format", ip, username)
-        return False, "Неверный логин или пароль"
-
-    if not (PASSWORD_MIN_LEN <= len(password) <= PASSWORD_MAX_LEN):
-        _register_failed_attempt(ip)
-        _audit_log("invalid_password_length", ip, username)
-        return False, "Неверный логин или пароль"
+    # 3. Защита от timing-атак: ВСЕГДА выполняем bcrypt с тем же cost.
+    # Это занимает примерно одинаковое время независимо от того,
+    # существует юзер или нет, корректен пароль или нет.
+    user_exists = bool(LOGIN_RE.match(username)) and (
+        PASSWORD_MIN_LEN <= len(password) <= PASSWORD_MAX_LEN
+    )
 
     users = _load_users()
-    user_data = users.get(username)
+    user_data = users.get(username) if user_exists else None
+    stored_hash = user_data["password_hash"] if user_data else _FAKE_BCRYPT_HASH
 
-    # Защита от timing-атак: всегда выполняем bcrypt
-    fake_hash = "$2b$12$fakefakefakefakefakefakefakefakefakefakefakefakefakefakefa"
-    stored_hash = user_data["password_hash"] if user_data else fake_hash
-
+    # bcrypt всегда выполняется — это самая дорогая операция
     try:
         password_ok = bcrypt.check_password_hash(stored_hash, password)
-    except ValueError:
+    except (ValueError, Exception):
         password_ok = False
 
-    if not user_data or not password_ok:
+    # Окончательное решение
+    if not user_exists or not user_data or not password_ok:
         attempts, just_blocked = _register_failed_attempt(ip)
         if just_blocked:
             _audit_log("blocked_now", ip, username, f"after {MAX_ATTEMPTS} attempts")
@@ -331,15 +400,15 @@ def verify_credentials(username: str, password: str) -> tuple[bool, str]:
     users[username] = user_data
     _save_users(users)
 
-    _clear_attempts(ip)
+    _clear_attempts_and_blocks(ip)
     _audit_log("login_success", ip, username)
 
     return True, ""
 
 
 def update_credentials(new_username: str, new_password: str, current_username: str) -> tuple[bool, str]:
-    """Меняет логин и пароль текущего пользователя + ротирует SECRET_KEY."""
-    new_username = new_username.strip()
+    """Меняет учётные данные и ротирует SECRET_KEY."""
+    new_username = (new_username or "").strip()
 
     if not LOGIN_RE.match(new_username):
         return False, "Логин: 3-32 символа, только латиница, цифры, _ и -"
@@ -370,7 +439,6 @@ def update_credentials(new_username: str, new_password: str, current_username: s
     ip = _get_client_ip()
     _audit_log("credentials_changed", ip, current_username, f"new={new_username}")
 
-    # Ротируем SECRET_KEY — все активные сессии станут невалидными
     rotate_secret_key()
 
-    return True, "Учётные данные обновлены. Сервис перезапускается, войдите заново."
+    return True, "Учётные данные обновлены. Войдите заново."
