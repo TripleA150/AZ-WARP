@@ -2,7 +2,7 @@
 Description=sing-box service
 Documentation=https://sing-box.sagernet.org
 # Добавлен docker.service в After
-After=network.target nss-lookup.target network-online.target docker.service
+After=network.target nss-lookup.target network-online.target docker.service antizapret.service
 
 [Service]
 User=root
