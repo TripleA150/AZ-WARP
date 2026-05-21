@@ -46,11 +46,78 @@ echo ""
 
 # ===== Параметры =====
 
-read -r -p "Внешний порт веб-панели [$DEFAULT_PORT]: " PORT
-PORT="${PORT:-$DEFAULT_PORT}"
+# ===== Функции проверки портов =====
+_port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnH "sport = :$port" 2>/dev/null | grep -q .
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tlnp 2>/dev/null | grep -qE ":${port}\s"
+    else
+        return 1
+    fi
+}
 
-read -r -p "Внутренний порт (gunicorn) [$DEFAULT_BACKEND_PORT]: " BACKEND_PORT
-BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+_port_owner() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnpH "sport = :$port" 2>/dev/null | head -1 | grep -oP 'users:\(\("\K[^"]+' || echo "?"
+    else
+        echo "?"
+    fi
+}
+
+_validate_port() {
+    local port="$1"
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+}
+
+# ===== Внешний порт =====
+while true; do
+    read -r -p "Внешний порт веб-панели [$DEFAULT_PORT]: " PORT
+    PORT="${PORT:-$DEFAULT_PORT}"
+
+    if ! _validate_port "$PORT"; then
+        echo -e "${RED}Порт должен быть числом 1-65535${NC}"
+        continue
+    fi
+
+    if _port_in_use "$PORT"; then
+        owner=$(_port_owner "$PORT")
+        echo -e "${RED}⚠ Порт $PORT уже занят процессом: ${YELLOW}$owner${NC}"
+        echo -e "${YELLOW}Выберите другой порт или освободите этот.${NC}"
+        continue
+    fi
+
+    echo -e "${GREEN}✓ Порт $PORT свободен${NC}"
+    break
+done
+
+# ===== Внутренний порт =====
+while true; do
+    read -r -p "Внутренний порт (gunicorn) [$DEFAULT_BACKEND_PORT]: " BACKEND_PORT
+    BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+
+    if ! _validate_port "$BACKEND_PORT"; then
+        echo -e "${RED}Порт должен быть числом 1-65535${NC}"
+        continue
+    fi
+
+    if [ "$BACKEND_PORT" = "$PORT" ]; then
+        echo -e "${RED}⚠ Внутренний порт не может совпадать с внешним ($PORT)${NC}"
+        continue
+    fi
+
+    if _port_in_use "$BACKEND_PORT"; then
+        owner=$(_port_owner "$BACKEND_PORT")
+        echo -e "${RED}⚠ Порт $BACKEND_PORT уже занят процессом: ${YELLOW}$owner${NC}"
+        echo -e "${YELLOW}Выберите другой порт или освободите этот.${NC}"
+        continue
+    fi
+
+    echo -e "${GREEN}✓ Порт $BACKEND_PORT свободен${NC}"
+    break
+done
 
 read -r -p "Логин администратора [admin]: " ADMIN_USER
 ADMIN_USER="${ADMIN_USER:-admin}"
@@ -62,22 +129,62 @@ while ! [[ "$ADMIN_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; do
     ADMIN_USER="${ADMIN_USER:-admin}"
 done
 
-# Генерация безопасного пароля по умолчанию
-DEFAULT_PASSWORD=$(openssl rand -base64 16 2>/dev/null | tr -d '=+/' | cut -c1-12)
-if [ -z "$DEFAULT_PASSWORD" ] || [ ${#DEFAULT_PASSWORD} -lt 10 ]; then
-    DEFAULT_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-12)
-fi
+# ===== Пароль =====
+# Генератор безопасного пароля
+_generate_password() {
+    local p
+    p=$(openssl rand -base64 16 2>/dev/null | tr -d '=+/' | cut -c1-12)
+    if [ -z "$p" ] || [ ${#p} -lt 10 ]; then
+        p=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-12)
+    fi
+    echo "$p"
+}
+
+PASSWORD_GENERATED="n"
 
 echo ""
-read -r -p "Пароль (Enter = сгенерировать автоматически, мин. 6 симв.): " ADMIN_PASSWORD
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-$DEFAULT_PASSWORD}"
+echo -e "${CYAN}Пароль администратора:${NC}"
+echo -e "  - Нажмите Enter для генерации случайного безопасного пароля"
+echo -e "  - Или введите свой (минимум 6 символов, не отображается)"
+echo ""
 
-# Валидация пароля
-while [ ${#ADMIN_PASSWORD} -lt 6 ]; do
-    echo -e "${RED}Пароль слишком короткий (минимум 6 символов).${NC}"
-    read -r -p "Пароль [Enter = сгенерировать]: " ADMIN_PASSWORD
-    ADMIN_PASSWORD="${ADMIN_PASSWORD:-$DEFAULT_PASSWORD}"
+while true; do
+    read -r -s -p "Пароль: " ADMIN_PASSWORD
+    echo ""
+
+    # Пустой ввод - генерируем
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        ADMIN_PASSWORD=$(_generate_password)
+        PASSWORD_GENERATED="y"
+        echo -e "${GREEN}✓ Сгенерирован случайный пароль (будет показан в конце)${NC}"
+        break
+    fi
+
+    # Валидация длины
+    if [ ${#ADMIN_PASSWORD} -lt 6 ]; then
+        echo -e "${RED}Пароль слишком короткий (минимум 6 символов).${NC}"
+        continue
+    fi
+
+    if [ ${#ADMIN_PASSWORD} -gt 256 ]; then
+        echo -e "${RED}Пароль слишком длинный (максимум 256 символов).${NC}"
+        continue
+    fi
+
+    # Подтверждение
+    read -r -s -p "Подтвердите пароль: " ADMIN_PASSWORD_CONFIRM
+    echo ""
+
+    if [ "$ADMIN_PASSWORD" != "$ADMIN_PASSWORD_CONFIRM" ]; then
+        echo -e "${RED}Пароли не совпадают, попробуйте ещё раз.${NC}"
+        continue
+    fi
+
+    echo -e "${GREEN}✓ Пароль установлен${NC}"
+    break
 done
+
+unset ADMIN_PASSWORD_CONFIRM
 
 # ===== HTTPS =====
 
@@ -522,9 +629,13 @@ else
 fi
 
 echo -e "  Логин:  ${CYAN}$ADMIN_USER${NC}"
-echo -e "  Пароль: ${CYAN}$ADMIN_PASSWORD${NC}"
-echo ""
-echo -e "  ${RED}⚠ Пароль показан ТОЛЬКО СЕЙЧАС — сохраните его!${NC}"
+if [ "$PASSWORD_GENERATED" = "y" ]; then
+    echo -e "  Пароль: ${CYAN}$ADMIN_PASSWORD${NC}"
+    echo ""
+    echo -e "  ${RED}⚠ Пароль показан ТОЛЬКО СЕЙЧАС — сохраните его!${NC}"
+else
+    echo -e "  Пароль: ${CYAN}[установленный вами]${NC}"
+fi
 echo ""
 echo -e "  ${YELLOW}При утере пароля:${NC}"
 echo -e "    ${CYAN}warper webpass --reset${NC}   — сгенерирует новый пароль для admin"
