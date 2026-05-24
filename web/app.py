@@ -62,19 +62,36 @@ def _csrf_origin_check():
     if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
         return None
 
+    if request.path == "/login":
+        return None
 
     origin = request.headers.get("Origin", "").strip()
     referer = request.headers.get("Referer", "").strip()
 
-    # /login разрешён без проверки (пользователь может прийти с любой страницы)
-    if request.path == "/login":
-        return None
-
+    # Нет ни Origin ни Referer = это не браузер с активной сессией, риск CSRF нулевой
+    # (если кто-то делает curl - у него нет cookie, login_required отшибёт)
     if not origin and not referer:
         return None
 
-    # Проверяем что Origin/Referer указывают на наш хост
-    expected_host = request.host  # включает порт если не стандартный
+    # Собираем все возможные варианты "нашего" хоста
+    # request.host - то что Flask видит (за ProxyFix - это X-Forwarded-Host от nginx)
+    # request.headers['Host'] - оригинальный Host header
+    flask_host = request.host or ""
+    orig_host = request.headers.get("Host", "").strip()
+    fwd_host = request.headers.get("X-Forwarded-Host", "").strip()
+
+    allowed_hosts = set()
+    for h in (flask_host, orig_host, fwd_host):
+        if not h:
+            continue
+        allowed_hosts.add(h)
+        # Добавляем варианты с/без порта
+        if ":" in h:
+            allowed_hosts.add(h.split(":")[0])
+        else:
+            # Без порта - могут быть стандартные порты
+            allowed_hosts.add(f"{h}:80")
+            allowed_hosts.add(f"{h}:443")
 
     def _check_url(url):
         if not url:
@@ -82,33 +99,41 @@ def _csrf_origin_check():
         from urllib.parse import urlparse
         try:
             parsed = urlparse(url)
-            return parsed.netloc == expected_host
+            netloc = parsed.netloc
+            if not netloc:
+                return False
+            # Проверяем разные комбинации
+            if netloc in allowed_hosts:
+                return True
+            # Без порта тоже сравним
+            host_only = netloc.split(":")[0] if ":" in netloc else netloc
+            for allowed in allowed_hosts:
+                allowed_host_only = allowed.split(":")[0] if ":" in allowed else allowed
+                if host_only == allowed_host_only:
+                    return True
+            return False
         except Exception:
             return False
 
     if origin:
-        if not _check_url(origin):
-            logger.warning(
-                "CSRF blocked: bad Origin. method=%s path=%s origin=%r host=%r",
-                request.method, request.path, origin, expected_host,
-            )
-            abort(403, description="CSRF check failed: invalid Origin")
-        return None
+        if _check_url(origin):
+            return None
+        logger.warning(
+            "CSRF blocked: bad Origin. method=%s path=%s origin=%r allowed_hosts=%r",
+            request.method, request.path, origin, allowed_hosts,
+        )
+        abort(403, description="CSRF check failed: invalid Origin")
 
     if referer:
-        if not _check_url(referer):
-            logger.warning(
-                "CSRF blocked: bad Referer. method=%s path=%s referer=%r host=%r",
-                request.method, request.path, referer, expected_host,
-            )
-            abort(403, description="CSRF check failed: invalid Referer")
-        return None
+        if _check_url(referer):
+            return None
+        logger.warning(
+            "CSRF blocked: bad Referer. method=%s path=%s referer=%r allowed_hosts=%r",
+            request.method, request.path, referer, allowed_hosts,
+        )
+        abort(403, description="CSRF check failed: invalid Referer")
 
-    logger.warning(
-        "CSRF check failed: method=%s path=%s origin=%r referer=%r host=%r",
-        request.method, request.path, origin, referer, expected_host,
-    )
-    abort(403, description="CSRF check failed: invalid Origin/Referer")
+    return None
 
 
 # ===== Безопасные cookie при HTTPS =====
