@@ -74,7 +74,7 @@ _validate_port() {
 
 # ===== Внешний порт =====
 while true; do
-    read -r -p "Внешний порт веб-панели [$DEFAULT_PORT]: " PORT
+    read -r -e -p "Внешний порт веб-панели [$DEFAULT_PORT]: " PORT
     PORT="${PORT:-$DEFAULT_PORT}"
 
     if ! _validate_port "$PORT"; then
@@ -95,7 +95,7 @@ done
 
 # ===== Внутренний порт =====
 while true; do
-    read -r -p "Внутренний порт (gunicorn) [$DEFAULT_BACKEND_PORT]: " BACKEND_PORT
+    read -r -e -p "Внутренний порт (gunicorn) [$DEFAULT_BACKEND_PORT]: " BACKEND_PORT
     BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
 
     if ! _validate_port "$BACKEND_PORT"; then
@@ -119,14 +119,15 @@ while true; do
     break
 done
 
-read -r -p "Логин администратора [admin]: " ADMIN_USER
-ADMIN_USER="${ADMIN_USER:-admin}"
+# ===== Логин =====
+while true; do
+    read -r -e -p "Логин администратора [admin]: " ADMIN_USER
+    ADMIN_USER=$(echo "${ADMIN_USER:-admin}" | xargs)  # обрезать пробелы
 
-# Валидация логина
-while ! [[ "$ADMIN_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; do
-    echo -e "${RED}Логин: 3-32 символа, латиница/цифры/_-${NC}"
-    read -r -p "Логин администратора [admin]: " ADMIN_USER
-    ADMIN_USER="${ADMIN_USER:-admin}"
+    if [[ "$ADMIN_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; then
+        break
+    fi
+    echo -e "${RED}Логин: 3-32 символа, латиница, цифры, _ или - ${NC}"
 done
 
 # ===== Пароль =====
@@ -188,12 +189,36 @@ unset ADMIN_PASSWORD_CONFIRM
 
 # ===== HTTPS =====
 
+# ===== HTTPS =====
 ENABLE_HTTPS="n"
 DOMAIN=""
-read -r -p "Включить HTTPS? (y/N): " enable_https_input
-if [[ "$enable_https_input" =~ ^[Yy]$ ]]; then
-    ENABLE_HTTPS="y"
-    read -r -p "Доменное имя (для Let's Encrypt) или Enter для самоподписанного: " DOMAIN
+
+while true; do
+    read -r -e -p "Включить HTTPS? (y/N): " enable_https_input
+    enable_https_input="${enable_https_input,,}"  # в нижний регистр
+
+    if [ -z "$enable_https_input" ] || [ "$enable_https_input" = "n" ] || [ "$enable_https_input" = "no" ]; then
+        ENABLE_HTTPS="n"
+        break
+    elif [ "$enable_https_input" = "y" ] || [ "$enable_https_input" = "yes" ]; then
+        ENABLE_HTTPS="y"
+        break
+    else
+        echo -e "${RED}Введите y, n или нажмите Enter${NC}"
+    fi
+done
+
+if [ "$ENABLE_HTTPS" = "y" ]; then
+    read -r -e -p "Доменное имя (для Let's Encrypt) или Enter для самоподписанного: " DOMAIN
+    DOMAIN=$(echo "$DOMAIN" | xargs)  # обрезать пробелы
+
+    # Валидация формата домена если введён
+    if [ -n "$DOMAIN" ]; then
+        if ! [[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+            echo -e "${RED}⚠ Некорректный формат домена. Будет использован самоподписанный сертификат.${NC}"
+            DOMAIN=""
+        fi
+    fi
 fi
 
 echo ""
