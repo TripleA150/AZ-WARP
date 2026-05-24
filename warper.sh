@@ -39,7 +39,7 @@ NC='\033[0m'
 # ===== Глобальные переменные состояния =====
 SUBNET="198.20.0.0/24"
 TUN_IP="198.20.0.1/24"
-FULLVPN_WARP_RESOLVE="n"           # включать ли WARP-резолвинг для FullVPN
+FULLVPN_WARP_RESOLVE="n"
 CURRENT_OUTBOUND_MODE="warp"
 SLAVE_SERVER=""
 SLAVE_PORT="8444"
@@ -63,28 +63,34 @@ MENU_UPDATE_AVAILABLE=false
 MENU_REMOTE_VER="$LOCAL_VER"
 
 # ===== Lock-файл =====
+# Lock берётся ТОЛЬКО для тяжёлых команд (toggle, sync, ipsync, mode, subnet, patch, update).
+# Все остальные команды (включая TUI-меню без аргументов) работают БЕЗ блокировки,
+# чтобы веб-панель могла параллельно вызывать warper.
+
 acquire_lock() {
-# Lock с ожиданием для CLI команд, без lock для read-only команд
+    exec 9>"$LOCK_FILE"
+    if ! flock -w 30 9; then
+        echo -e "${RED}Не удалось получить блокировку (другая операция > 30 сек)${NC}" >&2
+        exit 1
+    fi
+}
+
+release_lock() {
+    flock -u 9 2>/dev/null || true
+    rm -f "$LOCK_FILE" 2>/dev/null || true
+}
+
+trap 'release_lock' EXIT
+
+# Lock берём ТОЛЬКО для тяжёлых команд по первому аргументу
 case "${1:-}" in
-    # Read-only / быстрые команды - lock не нужен
-    status|doctor|iplist|iproutes|logs|domainslist|warpkey|wgconfig|config|\
-    add|remove|enable|disable|ipadd|ipremove|autopatch|fullvpn|iproutemode|\
-    ipexport|loglevel|mtu|webpass|websync|ipranges)
-        :  # без блокировки — эти команды быстрые, или сами защищаются
+    toggle|sync|ipsync|patch|mode|subnet|update)
+        acquire_lock
         ;;
     *)
-        # Только для тяжёлых: toggle, sync, ipsync, mode, subnet, patch
-        exec 9>"$LOCK_FILE"
-        if ! flock -w 30 9; then
-            echo -e "${RED}Не удалось получить блокировку (другая операция выполняется > 30 сек)${NC}" >&2
-            exit 1
-        fi
+        :  # без lock - TUI и быстрые команды
         ;;
 esac
-}
-release_lock() { rm -f "$LOCK_FILE"; }
-trap 'release_lock' EXIT
-acquire_lock
 
 # ===== Подключение модулей =====
 WARPER_LIB="$WARPER_DIR/lib"
@@ -145,10 +151,9 @@ do
 done
 unset _lib
 
-# Опциональные модули - подгружаем если есть, попытаемся скачать если нет
+# Опциональные модули
 for _opt_module in "$WARPER_MENUS/web-menu.sh"; do
     if [ ! -f "$_opt_module" ]; then
-        # Пытаемся скачать тихо (если нет интернета - не критично)
         local_name=$(basename "$_opt_module" .sh)
         if curl -fsSL --connect-timeout 5 \
             "$REPO_URL/menus/${local_name}.sh?t=$(date +%s)" \
@@ -230,7 +235,7 @@ case "${1:-}" in
     iplist)   extract_ip_ranges; exit $? ;;
     iproutes) get_current_tun_routes; exit $? ;;
 
-    # ===== Новые команды для веб-панели =====
+    # ===== Команды для веб-панели =====
     toggle)   cli_toggle_warper; exit $? ;;
     mode)
         case "${2:-}" in
@@ -284,15 +289,6 @@ case "${1:-}" in
         shift
         cli_webpass "$@"
         exit $?
-        ;;
-esac
-
-case "${1:-}" in
-    websync|ipranges|webpass)
-        :
-        ;;
-    *)
-        rebuild_master_file
         ;;
 esac
 
