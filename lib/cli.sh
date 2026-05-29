@@ -792,37 +792,26 @@ cli_domains_list() {
 # ===== РЕДАКТИРОВАНИЕ ip-ranges.txt =====
 
 # Возвращает содержимое ip-ranges.txt без стандартной шапки-инструкции.
-# Шапка определяется по строкам которые содержат типичные фразы шапки.
 # Пользовательские комментарии и пустые строки сохраняются.
 cli_ip_ranges_content() {
     if [ ! -f "$IP_RANGES_FILE" ]; then
         return 0
     fi
 
-    # Точно определяем конец шапки: ищем последнюю строку шапки и выводим всё после неё.
-    # Шапка по умолчанию заканчивается строкой:
-    #   "# После изменения файла выполните: warper ipsync"
-    # Если такой строки нет (старый файл) — берём весь файл как есть.
-
-    local header_end_line
-    header_end_line=$(grep -n '^# После изменения файла выполните' "$IP_RANGES_FILE" 2>/dev/null | head -1 | cut -d: -f1)
-
-    if [ -z "$header_end_line" ]; then
-        # Шапка не найдена — возвращаем весь файл как есть
-        cat "$IP_RANGES_FILE"
-        return 0
-    fi
-
-    # Пропускаем шапку и одну пустую строку после неё (если есть)
-    local skip_lines=$header_end_line
-    # Проверяем, есть ли пустая строка сразу после шапки
-    local next_line
-    next_line=$(sed -n "$((header_end_line + 1))p" "$IP_RANGES_FILE")
-    if [ -z "$next_line" ]; then
-        skip_lines=$((header_end_line + 1))
-    fi
-
-    tail -n +$((skip_lines + 1)) "$IP_RANGES_FILE"
+    awk '
+    BEGIN { in_header = 1 }
+    {
+        if (in_header) {
+            # Пустая строка или комментарий - часть шапки, пропускаем
+            if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                next
+            }
+            # Первая не-комментарийная строка - шапка закончилась
+            in_header = 0
+        }
+        print
+    }
+    ' "$IP_RANGES_FILE"
 }
 
 # Заменяет содержимое ip-ranges.txt на переданные строки и синкает.
