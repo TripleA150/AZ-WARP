@@ -298,6 +298,20 @@ update_warper() {
     rm -rf "$tmpdir" "$backupdir"
 
     echo -e "${GREEN}Утилита и списки успешно обновлены!${NC}"
+
+    # ===== Обновление веб-панели если она установлена =====
+    if [ -d "/root/warper/web" ] && [ -f "/root/warper/web/app.py" ]; then
+        echo ""
+        echo -e "${CYAN}=== Обновление веб-панели ===${NC}"
+        if cli_web_update; then
+            echo -e "${GREEN}Веб-панель обновлена.${NC}"
+        else
+            echo -e "${YELLOW}⚠ Обновление веб-панели завершилось с ошибкой.${NC}"
+            echo -e "${YELLOW}  Веб-панель может работать некорректно — проверьте логи.${NC}"
+        fi
+    fi
+
+    echo ""
     read -r -e -p "Нажмите Enter для перезапуска WARPER..."
     exec /usr/local/bin/warper
 }
