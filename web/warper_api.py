@@ -793,14 +793,14 @@ _VERSION_CACHE_TTL = 60  # 1 минута
 
 def check_for_updates(force: bool = False) -> dict[str, Any]:
     """
-    Проверяет наличие новой версии WARPER на GitHub.
+    Проверяет наличие новой версии WARPER через GitHub API.
+    GitHub API отдаёт актуальные данные без CDN-задержки (в отличие от raw.githubusercontent.com).
     Результат кэшируется на _VERSION_CACHE_TTL секунд.
-    force=True — игнорировать кэш.
     """
     import time
     now = time.time()
 
-    # Используем кэш если можно
+    # Кэш
     if not force and _version_cache["data"] and \
        (now - _version_cache["checked_at"] < _VERSION_CACHE_TTL):
         return _version_cache["data"]
@@ -812,7 +812,7 @@ def check_for_updates(force: bool = False) -> dict[str, Any]:
         "error": None,
     }
 
-    # Текущая версия из файла (читаем каждый раз заново)
+    # Текущая версия из файла
     version_file = "/root/warper/version"
     if os.path.exists(version_file):
         try:
@@ -821,36 +821,63 @@ def check_for_updates(force: bool = False) -> dict[str, Any]:
         except OSError:
             pass
 
-    # Версия с GitHub
     branch = _detect_warper_branch()
-    # ВАЖНО: добавляем рандомный query чтобы обойти CDN-кэш GitHub
-    url = f"https://raw.githubusercontent.com/Liafanx/AZ-WARP/{branch}/version?_={int(now)}"
+
+    # Запрос через GitHub API (без CDN-кэша)
+    # https://docs.github.com/en/rest/repos/contents
+    api_url = f"https://api.github.com/repos/Liafanx/AZ-WARP/contents/version?ref={branch}"
 
     try:
         import urllib.request
+        import base64
         req = urllib.request.Request(
-            url,
+            api_url,
             headers={
                 "User-Agent": "warper-web/1.0",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
+                "Accept": "application/vnd.github.v3+json",
             },
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
-            remote = resp.read().decode("utf-8").strip()
-            if re.match(r"^\d+\.\d+\.\d+$", remote):
-                result["remote"] = remote
-                result["update_available"] = _version_gt(remote, result["current"])
+            data = _json_loads(resp.read().decode("utf-8"))
+            # Содержимое файла приходит в base64
+            content_b64 = data.get("content", "").replace("\n", "")
+            if content_b64:
+                remote = base64.b64decode(content_b64).decode("utf-8").strip()
+                if re.match(r"^\d+\.\d+\.\d+$", remote):
+                    result["remote"] = remote
+                    result["update_available"] = _version_gt(remote, result["current"])
     except Exception as e:
-        result["error"] = str(e)[:200]
-        # При ошибке - не кэшируем ошибку надолго, чтобы пользователь мог быстро повторить
-        _version_cache["checked_at"] = now - _VERSION_CACHE_TTL + 10  # повторить через 10 сек
-        _version_cache["data"] = result
-        return result
+        # Fallback: raw.githubusercontent.com (с задержкой CDN до 5 минут)
+        try:
+            raw_url = f"https://raw.githubusercontent.com/Liafanx/AZ-WARP/{branch}/version?_={int(now)}"
+            req = urllib.request.Request(
+                raw_url,
+                headers={
+                    "User-Agent": "warper-web/1.0",
+                    "Cache-Control": "no-cache",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                remote = resp.read().decode("utf-8").strip()
+                if re.match(r"^\d+\.\d+\.\d+$", remote):
+                    result["remote"] = remote
+                    result["update_available"] = _version_gt(remote, result["current"])
+                    result["error"] = None  # успех через fallback - не считаем ошибкой
+        except Exception as e2:
+            result["error"] = f"API: {str(e)[:80]} / RAW: {str(e2)[:80]}"
+            _version_cache["checked_at"] = now - _VERSION_CACHE_TTL + 10
+            _version_cache["data"] = result
+            return result
 
     _version_cache["checked_at"] = now
     _version_cache["data"] = result
     return result
+
+
+def _json_loads(s: str):
+    """Безопасный json.loads с импортом по требованию."""
+    import json
+    return json.loads(s)
 
 def _detect_warper_branch() -> str:
     """Извлекает ветку из REPO_URL в warper.sh (default: main)."""
