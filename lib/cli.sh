@@ -1258,18 +1258,12 @@ cli_web_update() {
     cd /
     rm -rf "$tmp_dir"
 
-    # Перезапуск сервиса
+    # Перезапуск сервиса (с небольшой задержкой чтобы родитель успел вернуть ответ)
     if systemctl is-active --quiet warper-web 2>/dev/null; then
-        echo -e "${CYAN}Перезапуск сервиса warper-web...${NC}"
-        systemctl restart warper-web
-        sleep 2
-        if systemctl is-active --quiet warper-web 2>/dev/null; then
-            echo -e "${GREEN}✓ Сервис перезапущен${NC}"
-        else
-            echo -e "${RED}⚠ Сервис не запустился после обновления!${NC}"
-            echo -e "${YELLOW}Логи: journalctl -u warper-web -n 20${NC}"
-            return 1
-        fi
+        echo -e "${CYAN}Планируется перезапуск сервиса warper-web через 3 сек...${NC}"
+        # Запускаем перезапуск в фоне с задержкой, чтобы текущий запрос успел завершиться
+        (sleep 3 && systemctl restart warper-web) >/dev/null 2>&1 &
+        echo -e "${GREEN}✓ Перезапуск запланирован${NC}"
     fi
 
     echo ""
