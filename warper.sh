@@ -124,7 +124,8 @@ if [ ! -d "$WARPER_LIB" ] || [ ! -f "$WARPER_LIB/utils.sh" ]; then
     exit 0
 fi
 
-# Обязательные модули - без них warper не работает
+# Обязательные модули - без них warper не работает.
+# Если модуль отсутствует - пытаемся скачать (для обновления со старых версий).
 for _lib in \
     "$WARPER_LIB/utils.sh" \
     "$WARPER_LIB/config.sh" \
@@ -143,13 +144,24 @@ for _lib in \
     "$WARPER_MENUS/main.sh"
 do
     if [ ! -f "$_lib" ]; then
-        echo -e "${RED}Отсутствует модуль: $_lib${NC}" >&2
-        exit 1
+        # Пытаемся скачать недостающий модуль (тихо)
+        _rel_path="${_lib#$WARPER_DIR/}"  # lib/cli.sh или menus/main.sh
+        echo -e "${YELLOW}Отсутствует модуль: $_lib — пытаюсь скачать...${NC}" >&2
+        mkdir -p "$(dirname "$_lib")"
+        if ! curl -fsSL --connect-timeout 10 \
+            "${REPO_URL}/${_rel_path}?t=$(date +%s)" \
+            -o "$_lib" 2>/dev/null; then
+            echo -e "${RED}Не удалось скачать $_rel_path${NC}" >&2
+            echo -e "${RED}Проверьте интернет и REPO_URL в warper.sh${NC}" >&2
+            exit 1
+        fi
+        chmod 644 "$_lib"
+        echo -e "${GREEN}✓ $_rel_path скачан${NC}" >&2
     fi
     # shellcheck disable=SC1090
     source "$_lib"
 done
-unset _lib
+unset _lib _rel_path
 
 # Опциональные модули
 for _opt_module in "$WARPER_MENUS/web-menu.sh"; do
