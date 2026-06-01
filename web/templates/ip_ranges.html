@@ -78,28 +78,25 @@
                 Один CIDR на строку. Без маски — будет /32. Сохранение запускает sync.
             </p>
         </div>
-        <button hx-get="{{ url_for('htmx_ip_ranges_file_content') }}"
-                hx-target="#ip-ranges-textarea"
-                hx-swap="innerHTML"
-                class="px-3 py-1.5 text-xs bg-surface-950 hover:bg-emerald-900/30 border border-emerald-900/40 text-emerald-300 rounded transition">
-            ↻ Перечитать
+        <button type="button"
+                onclick="reloadTextarea('ip-ranges-textarea', '{{ url_for('htmx_ip_ranges_file_content') }}')"
+                class="px-3 py-1.5 text-xs bg-surface-950 hover:bg-emerald-900/30 border border-emerald-900/40 text-emerald-300 rounded transition flex items-center gap-1.5">
+            <span class="reload-spinner hidden inline-block w-3 h-3 border-2 border-emerald-300 border-t-transparent rounded-full animate-spin"></span>
+            <span>↻ Перечитать</span>
         </button>
     </div>
 
-<form hx-post="{{ url_for('htmx_ip_ranges_file_save') }}"
-      hx-swap="none"
-      class="p-5">
-    <textarea id="ip-ranges-textarea"
-              name="content"
-              rows="20"
-              hx-get="{{ url_for('htmx_ip_ranges_file_content') }}"
-              hx-trigger="load"
-              hx-swap="innerHTML"
-              spellcheck="false"
-              class="w-full px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
-                     text-emerald-100 placeholder-emerald-700 text-sm font-mono
-                     focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none resize-y"
-              placeholder="# Telegram&#10;91.108.4.0/22&#10;91.108.8.0/22&#10;&#10;# Cloudflare DNS&#10;1.1.1.1"></textarea>
+    <form hx-post="{{ url_for('htmx_ip_ranges_file_save') }}"
+          hx-swap="none"
+          class="p-5">
+        <textarea id="ip-ranges-textarea"
+                  name="content"
+                  rows="20"
+                  spellcheck="false"
+                  class="w-full px-3 py-2 bg-surface-950 border border-emerald-900/50 rounded-lg
+                         text-emerald-100 placeholder-emerald-700 text-sm font-mono
+                         focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none resize-y"
+                  placeholder="# Telegram&#10;91.108.4.0/22&#10;91.108.8.0/22&#10;&#10;# DNS&#10;1.1.1.1"></textarea>
 
     <div class="flex justify-between items-center mt-3">
         <p class="text-xs text-emerald-500/60">
