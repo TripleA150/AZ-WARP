@@ -24,16 +24,41 @@ echo -e "${YELLOW}  Удаление веб-панели WARPER${NC}"
 echo -e "${YELLOW}=================================================${NC}"
 echo ""
 echo -e "Будут удалены:"
-echo -e "  • Сервис warper-web и его конфигурация systemd"
-echo -e "  • Конфиг nginx для warper-web"
-echo -e "  • Самоподписанные SSL-сертификаты (если были)"
-echo -e "  • Папка /root/warper/web/ (включая БД пользователей)"
+echo -e "  • Сервис warper-web (systemd unit)"
+echo -e "  • Конфиг nginx /etc/nginx/sites-{available,enabled}/warper-web"
+echo -e "  • Самоподписанные SSL-сертификаты /etc/nginx/ssl/warper-web.* (если есть)"
+echo -e "  • Папка /root/warper/web/ (включая БД пользователей, секреты, логи)"
 echo ""
-echo -e "${CYAN}Не будут затронуты:${NC}"
+echo -e "${CYAN}НЕ будут затронуты:${NC}"
 echo -e "  • WARPER (warper.sh, конфиги в /root/warper/)"
 echo -e "  • sing-box и его настройки"
 echo -e "  • Сертификаты Let's Encrypt в /etc/letsencrypt/"
+echo -e "    ${YELLOW}(могут использоваться другими сервисами на этом домене)${NC}"
 echo ""
+
+# Проверяем есть ли наш Let's Encrypt сертификат для информации
+LE_CERTS_INFO=""
+if [ -d "/etc/letsencrypt/live/" ]; then
+    # Ищем сертификаты которые упоминаются только в нашем конфиге warper-web
+    if [ -f "/etc/nginx/sites-available/warper-web" ]; then
+        OUR_DOMAIN=$(grep -oP 'ssl_certificate /etc/letsencrypt/live/\K[^/]+' \
+            /etc/nginx/sites-available/warper-web 2>/dev/null | head -1)
+        if [ -n "$OUR_DOMAIN" ] && [ -d "/etc/letsencrypt/live/$OUR_DOMAIN" ]; then
+            # Проверяем используется ли этот сертификат другими nginx-конфигами
+            OTHER_USERS=$(grep -lr "letsencrypt/live/$OUR_DOMAIN" \
+                /etc/nginx/sites-available/ 2>/dev/null | \
+                grep -v "/warper-web$" | wc -l)
+            if [ "$OTHER_USERS" -gt 0 ]; then
+                LE_CERTS_INFO="используется ещё в $OTHER_USERS других сайтах nginx"
+            else
+                LE_CERTS_INFO="не используется другими сайтами nginx"
+            fi
+            echo -e "${CYAN}ℹ Сертификат Let's Encrypt:${NC} $OUR_DOMAIN ($LE_CERTS_INFO)"
+            echo -e "  Удалить вручную при необходимости: ${YELLOW}certbot delete --cert-name $OUR_DOMAIN${NC}"
+            echo ""
+        fi
+    fi
+fi
 
 read -r -p "Продолжить удаление? (y/N): " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
