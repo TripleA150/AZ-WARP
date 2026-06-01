@@ -329,7 +329,6 @@ if [ "$ENABLE_HTTPS" = "y" ] && [ -n "$DOMAIN" ]; then
 # Минимальный server-блок на 80 - только для Let's Encrypt
 server {
     listen 80;
-    listen [::]:80;
     server_name $DOMAIN;
 
     location /.well-known/acme-challenge/ {
@@ -344,7 +343,6 @@ server {
 # Веб-панель пока на HTTP — до получения сертификата
 server {
     listen $PORT default_server;
-    listen [::]:$PORT default_server;
     server_name _;
 
     client_max_body_size 2M;
@@ -381,7 +379,6 @@ elif [ "$ENABLE_HTTPS" = "y" ]; then
     cat > "$NGINX_AVAIL" <<EOF
 server {
     listen $PORT ssl http2 default_server;
-    listen [::]:$PORT ssl http2 default_server;
     server_name _;
 
     ssl_certificate $SSL_DIR/warper-web.crt;
@@ -416,7 +413,6 @@ else
     cat > "$NGINX_AVAIL" <<EOF
 server {
     listen $PORT default_server;
-    listen [::]:$PORT default_server;
     server_name _;
 
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -489,7 +485,6 @@ if [ "$CERT_OK" = "y" ]; then
 # AZ-WARP Web Panel — HTTPS на порту $PORT, домен $DOMAIN
 server {
     listen $PORT ssl http2;
-    listen [::]:$PORT ssl http2;
     server_name $DOMAIN;
 
     ssl_certificate $CERTBOT_CERT;
@@ -526,7 +521,6 @@ server {
 # (порт 80 нужен только для acme-challenge, без редиректа на наш порт)
 server {
     listen 80;
-    listen [::]:80;
     server_name $DOMAIN;
 
     location /.well-known/acme-challenge/ {
