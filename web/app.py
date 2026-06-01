@@ -12,9 +12,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from dotenv import load_dotenv
 from flask import (
-    Flask, abort, flash, make_response,
-    redirect, render_template, request, url_for,
-    response, stream_with_context
+    Flask, Response, abort, flash, make_response,
+    redirect, render_template, request, stream_with_context, url_for,
 )
 from flask_login import current_user, login_required, login_user, logout_user
 
