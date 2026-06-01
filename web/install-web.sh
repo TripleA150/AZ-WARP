@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-REPO_BRANCH="${WARPER_WEB_BRANCH:-1.3.2}"
+REPO_BRANCH="${WARPER_WEB_BRANCH:-main}"
 REPO_RAW="https://raw.githubusercontent.com/Liafanx/AZ-WARP/${REPO_BRANCH}"
 REPO_GIT="https://github.com/Liafanx/AZ-WARP.git"
 
@@ -242,13 +242,13 @@ mkdir -p "$WEB_DIR/static" "$WEB_DIR/templates/partials"
 
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
-if ! git clone --depth 1 -b "$REPO_BRANCH" "$REPO_GIT" repo 2>/dev/null; then
-    echo -e "${RED}Не удалось скачать репозиторий ветки $REPO_BRANCH${NC}"
+if ! git clone --depth 1 -b "$" "$REPO_GIT" repo 2>/dev/null; then
+    echo -e "${RED}Не удалось скачать репозиторий ветки $${NC}"
     exit 1
 fi
 
 if [ ! -d "repo/web" ]; then
-    echo -e "${RED}В ветке $REPO_BRANCH нет папки web/${NC}"
+    echo -e "${RED}В ветке $ нет папки web/${NC}"
     exit 1
 fi
 
