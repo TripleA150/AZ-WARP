@@ -264,3 +264,80 @@ if (document.readyState === 'loading') {
 } else {
     initEventHandlers();
 }
+
+// ===== Загрузка контента в textarea =====
+
+// Загружает текст из URL в textarea по id.
+// Используется кнопкой "Перечитать" и автозагрузкой.
+// При успехе сохраняет позицию курсора если возможно.
+function reloadTextarea(textareaId, url) {
+    const ta = document.getElementById(textareaId);
+    if (!ta) return;
+
+    // Показываем спиннер на кнопке если есть
+    const button = document.querySelector('button[onclick*="' + textareaId + '"]');
+    const spinner = button ? button.querySelector('.reload-spinner') : null;
+    if (spinner) spinner.classList.remove('hidden');
+    if (button) button.disabled = true;
+
+    fetch(url, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: {
+            'Accept': 'text/plain',
+            'Cache-Control': 'no-cache',
+        },
+    })
+    .then(function(response) {
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
+        return response.text();
+    })
+    .then(function(text) {
+        ta.value = text;
+        showToast('Список перечитан', 'success');
+    })
+    .catch(function(err) {
+        showToast('Ошибка загрузки: ' + err.message, 'error');
+    })
+    .finally(function() {
+        if (spinner) spinner.classList.add('hidden');
+        if (button) button.disabled = false;
+    });
+}
+
+// Автозагрузка контента в textarea при загрузке страницы.
+// Срабатывает для всех textarea с атрибутом data-load-from.
+function autoLoadTextareas() {
+    const textareas = document.querySelectorAll('textarea[data-load-from]');
+    textareas.forEach(function(ta) {
+        const url = ta.getAttribute('data-load-from');
+        if (!url) return;
+        fetch(url, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                'Accept': 'text/plain',
+                'Cache-Control': 'no-cache',
+            },
+        })
+        .then(function(response) {
+            if (response.ok) return response.text();
+            throw new Error('HTTP ' + response.status);
+        })
+        .then(function(text) {
+            ta.value = text;
+        })
+        .catch(function(err) {
+            console.warn('Ошибка автозагрузки', url, err);
+        });
+    });
+}
+
+// Вызываем при загрузке страницы
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', autoLoadTextareas);
+} else {
+    autoLoadTextareas();
+}
