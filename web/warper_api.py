@@ -788,7 +788,7 @@ def save_ip_ranges_content(text: str) -> tuple[bool, str]:
 # ===== ПРОВЕРКА ОБНОВЛЕНИЙ =====
 
 _version_cache: dict[str, Any] = {"checked_at": 0, "data": None}
-_VERSION_CACHE_TTL = 300  # 5 минут
+_VERSION_CACHE_TTL = 60  # 1 минута
 
 
 def check_for_updates(force: bool = False) -> dict[str, Any]:
@@ -870,35 +870,43 @@ def _version_gt(a: str, b: str) -> bool:
         return False
 
 
-def update_warper_from_web() -> tuple[bool, str]:
+def update_warper_from_web():
     """
-    Запускает полное обновление WARPER (CLI команда `warper update`).
-    Если установлена веб-панель — она тоже обновится автоматически
-    (в конце update_warper в lib/update.sh).
-
-    Запускается в фоне через nohup, потому что:
-    1. WARPER при обновлении может рестартовать sing-box (долго)
-    2. Веб-панель при обновлении сама себя перезапустит
-    3. HTTP-ответ может не дойти до браузера
-
-    Возвращаем сразу OK, браузер ждёт 30 сек и перезагружает страницу.
+    Запускает `warper update` через subprocess и возвращает Popen-объект
+    для стриминга stdout/stderr в браузер через SSE.
+    Возвращает (popen_obj, error_message).
     """
     try:
         import subprocess
+        import os as _os
 
-        # Лог-файл для отладки
-        log_file = "/tmp/warper-update.log"
+        # Полное окружение чтобы warper.sh не падал
+        env = _os.environ.copy()
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+        env["SYSTEMD_PAGER"] = ""
+        env["TERM"] = "dumb"
+        env["LANG"] = "C.UTF-8"
+        env["LC_ALL"] = "C.UTF-8"
 
-        # Запускаем в фоне, отвязываем от родительского процесса
-        # ВАЖНО: `warper update` берёт lock — но мы из веб-панели его не блокируем,
-        # потому что веб-панель не вызывает warper параллельно
-        subprocess.Popen(
-            ["nohup", "bash", "-c", f"/usr/local/bin/warper update </dev/null >{log_file} 2>&1"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        # Запускаем `warper update` напрямую (НЕ через nohup),
+        # подключаем stdout/stderr к pipe чтобы их можно было стримить
+        proc = subprocess.Popen(
+            ["/usr/local/bin/warper", "update"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # склеиваем stderr в stdout
             stdin=subprocess.DEVNULL,
+            env=env,
+            bufsize=1,                  # line-buffered
+            text=True,
             start_new_session=True,
         )
-        return True, "Обновление запущено в фоне. Страница перезагрузится через 30 сек."
+        return proc, None
     except Exception as e:
-        return False, f"Не удалось запустить обновление: {e}"
+        return None, f"Не удалось запустить обновление: {e}"
+
+
+def invalidate_version_cache():
+    """Сбросить кэш проверки версии (вызывать после обновления)."""
+    global _version_cache
+    _version_cache = {"checked_at": 0, "data": None}
