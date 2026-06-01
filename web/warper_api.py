@@ -784,3 +784,117 @@ def save_ip_ranges_content(text: str) -> tuple[bool, str]:
         return False, "Таймаут операции"
     except Exception as e:
         return False, str(e)
+
+# ===== ПРОВЕРКА ОБНОВЛЕНИЙ =====
+
+_version_cache: dict[str, Any] = {"checked_at": 0, "data": None}
+_VERSION_CACHE_TTL = 300  # 5 минут
+
+
+def check_for_updates(force: bool = False) -> dict[str, Any]:
+    """
+    Проверяет наличие новой версии WARPER на GitHub.
+    Результат кэшируется на 5 минут.
+    Возвращает:
+      {
+        "current": "1.3.2",
+        "remote": "1.4.0",
+        "update_available": True,
+        "error": None
+      }
+    """
+    import time
+    now = time.time()
+    if not force and _version_cache["data"] and \
+       (now - _version_cache["checked_at"] < _VERSION_CACHE_TTL):
+        return _version_cache["data"]
+
+    result: dict[str, Any] = {
+        "current": "0.0.0",
+        "remote": None,
+        "update_available": False,
+        "error": None,
+    }
+
+    # Текущая версия из /root/warper/version
+    version_file = "/root/warper/version"
+    if os.path.exists(version_file):
+        try:
+            with open(version_file, "r") as f:
+                result["current"] = f.read().strip() or "0.0.0"
+        except OSError:
+            pass
+
+    # Версия с GitHub из той же ветки откуда устанавливались
+    # Берём из REPO_URL в warper.sh — он соответствует ветке
+    branch = _detect_warper_branch()
+    url = f"https://raw.githubusercontent.com/Liafanx/AZ-WARP/{branch}/version"
+
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            remote = resp.read().decode("utf-8").strip()
+            if re.match(r"^\d+\.\d+\.\d+$", remote):
+                result["remote"] = remote
+                result["update_available"] = _version_gt(remote, result["current"])
+    except Exception as e:
+        result["error"] = str(e)[:200]
+
+    _version_cache["checked_at"] = now
+    _version_cache["data"] = result
+    return result
+
+
+def _detect_warper_branch() -> str:
+    """Извлекает ветку из REPO_URL в warper.sh (default: main)."""
+    warper_sh = "/root/warper/warper.sh"
+    if os.path.exists(warper_sh):
+        try:
+            with open(warper_sh, "r") as f:
+                for line in f:
+                    m = re.match(r'^REPO_URL="https://raw\.githubusercontent\.com/[^/]+/[^/]+/([^"]+)"', line)
+                    if m:
+                        return m.group(1)
+        except OSError:
+            pass
+    return "main"
+
+
+def _version_gt(a: str, b: str) -> bool:
+    """a > b ?"""
+    def _parse(v):
+        return tuple(int(p) for p in v.split("."))
+    try:
+        return _parse(a) > _parse(b)
+    except (ValueError, AttributeError):
+        return False
+
+
+def update_warper_from_web() -> tuple[bool, str]:
+    """
+    Запускает обновление WARPER (CLI команда `warper update`).
+    Это может занять до 5 минут, поэтому увеличиваем timeout.
+    """
+    ok, out, err = _run_warper("update", timeout=300)
+    return ok, (out or err).strip() or ("Обновление выполнено" if ok else "Ошибка обновления")
+
+
+def update_web_panel() -> tuple[bool, str]:
+    """
+    Запускает обновление веб-панели (CLI команда `warper webupdate`).
+    После обновления сервис перезапускается, поэтому ответ может не дойти.
+    """
+    # ВАЖНО: после webupdate перезапускается сам сервис, поэтому ответ браузеру
+    # может не дойти. Возвращаем сразу OK, а команду запускаем в фоне через nohup.
+    try:
+        import subprocess
+        subprocess.Popen(
+            ["nohup", "bash", "-c", "/usr/local/bin/warper webupdate >/tmp/warper-webupdate.log 2>&1"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True, "Обновление запущено. Страница перезагрузится через 15 сек."
+    except Exception as e:
+        return False, f"Не удалось запустить обновление: {e}"
