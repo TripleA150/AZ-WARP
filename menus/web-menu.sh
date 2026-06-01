@@ -89,11 +89,12 @@ web_menu() {
             echo -e " ${YELLOW}6.${NC} ⟳  Перезапустить"
             echo -e " ${CYAN}7.${NC} 📄 Логи веб-панели"
             echo -e " ${CYAN}8.${NC} 📋 Лог авторизаций"
-            echo -e " ${RED}9.${NC} 🗑️  Удалить веб-панель"
+            echo -e " ${GREEN}9.${NC} ⚡ Обновить веб-панель"
+            echo -e " ${RED}U.${NC} 🗑️  Удалить веб-панель"
             echo -e " ${CYAN}0.${NC} ↩️  Назад"
             echo -e "${CYAN}==========================================${NC}"
 
-            read -r -e -p "Выбор [0-9]: " choice
+            read -r -e -p "Выбор: " choice
             case "${choice:-}" in
                 1) web_action_change_password ;;
                 2) web_action_reset_password ;;
@@ -103,7 +104,8 @@ web_menu() {
                 6) web_action_restart ;;
                 7) web_action_logs ;;
                 8) web_action_auth_log ;;
-                9) web_action_uninstall ;;
+                9) web_action_update ;;
+                u|U) web_action_uninstall ;;
                 0) return ;;
                 *) echo -e "${RED}Неверный выбор.${NC}"; sleep 1 ;;
             esac
@@ -298,6 +300,18 @@ web_action_auth_log() {
     echo -e "${CYAN}Полный лог: ${YELLOW}$auth_log${NC}"
     echo ""
     read -r -p "Нажмите Enter..."
+}
+
+web_action_update() {
+    echo ""
+    echo -e "${CYAN}Будут обновлены Python-код, шаблоны и статика веб-панели.${NC}"
+    echo -e "${YELLOW}.env, БД пользователей и SECRET_KEY сохранятся.${NC}"
+    echo ""
+    if prompt_confirm; then
+        cli_web_update
+        echo ""
+        read -r -p "Нажмите Enter..."
+    fi
 }
 
 web_action_uninstall() {
