@@ -290,6 +290,10 @@ case "${1:-}" in
         cli_webpass "$@"
         exit $?
         ;;
+    webupdate)
+        cli_web_update
+        exit $?
+        ;;        
 esac
 
 # ===== Главное меню =====
