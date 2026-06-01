@@ -306,9 +306,14 @@ web_action_auth_log() {
 web_action_uninstall() {
     echo ""
     echo -e "${RED}⚠ ВНИМАНИЕ! Будут удалены:${NC}"
-    echo -e "  • Сервис warper-web и его конфигурация"
-    echo -e "  • nginx-конфиг и SSL-сертификаты"
+    echo -e "  • Сервис warper-web и его конфигурация systemd"
+    echo -e "  • Конфиг nginx /etc/nginx/sites-{available,enabled}/warper-web"
+    echo -e "  • Самоподписанные SSL-сертификаты /etc/nginx/ssl/warper-web.* (если есть)"
     echo -e "  • Папка $WEB_DIR (включая БД пользователей)"
+    echo ""
+    echo -e "${CYAN}НЕ будут затронуты:${NC}"
+    echo -e "  • Сертификаты Let's Encrypt в /etc/letsencrypt/"
+    echo -e "    (могут использоваться другими сервисами)"
     echo ""
     read -r -e -p "Точно удалить? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
