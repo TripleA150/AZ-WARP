@@ -103,15 +103,15 @@ update_warper() {
     download_file_safe "$REPO_URL/download/chatgpt.txt" \
         "$tmpdir/chatgpt.txt" "chatgpt.txt" || { rm -rf "$tmpdir" "$backupdir"; return 1; }
 
-    # Модули lib/
+    # Модули lib/ (cli добавлен в 1.3.3)
     mkdir -p "$tmpdir/lib"
-    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update; do
+    for _libfile in utils config domains singbox kresd warp-keys wg ip-routes diagnostics update cli; do
         download_file_safe "$REPO_URL/lib/${_libfile}.sh" \
             "$tmpdir/lib/${_libfile}.sh" "lib/${_libfile}.sh" || \
             { rm -rf "$tmpdir" "$backupdir"; return 1; }
     done
 
-    # Модули menus/
+    # Модули menus/ (web-menu добавлен в 1.3.3)
     mkdir -p "$tmpdir/menus"
     for _menufile in main settings singbox-menu ip-menu web-menu; do
         download_file_safe "$REPO_URL/menus/${_menufile}.sh" \
