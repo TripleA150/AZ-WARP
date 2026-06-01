@@ -390,7 +390,11 @@ def htmx_domain_sync():
 def htmx_domains_file_content():
     """Возвращает только пользовательские домены для редактирования."""
     text = api.get_user_domains_block()
-    return text, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    # Возвращаем как plain text, JS сам подставит в textarea.value
+    return text, 200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
 
 
 @app.route("/htmx/domains/file-save", methods=["POST"])
@@ -477,7 +481,10 @@ def htmx_ip_export_toggle():
 @login_required
 def htmx_ip_ranges_file_content():
     text = api.get_ip_ranges_content()
-    return text, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    return text, 200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+    }
 
 
 @app.route("/htmx/ip-ranges/file-save", methods=["POST"])
