@@ -322,25 +322,12 @@ rm -f "$NGINX_LINK" /etc/nginx/sites-enabled/default
 
 if [ "$ENABLE_HTTPS" = "y" ] && [ -n "$DOMAIN" ]; then
     # ===== HTTPS с доменом (Let's Encrypt) =====
-    # Шаг 1: временный HTTP-конфиг для получения сертификата
+    # Шаг 1: временный HTTP-конфиг на нашем порту до получения сертификата
     mkdir -p /var/www/html
 
     cat > "$NGINX_AVAIL" <<EOF
-# Минимальный server-блок на 80 - только для Let's Encrypt
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
-    location / {
-        return 404;
-    }
-}
-
-# Веб-панель пока на HTTP — до получения сертификата
+# AZ-WARP Web Panel — временно HTTP до получения сертификата
+# (порт 80 НЕ трогаем чтобы не конфликтовать с другими сайтами)
 server {
     listen $PORT default_server;
     server_name _;
@@ -360,7 +347,7 @@ server {
         proxy_send_timeout 600s;
         proxy_buffering off;
         proxy_cache off;
-        chunked_transfer_encoding on;        
+        chunked_transfer_encoding on;
     }
 }
 EOF
@@ -463,8 +450,25 @@ if [ "$ENABLE_HTTPS" = "y" ] && [ -n "$DOMAIN" ]; then
     echo -e "${CYAN}8. Получение Let's Encrypt сертификата для $DOMAIN...${NC}"
 
     CERT_OK="n"
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
-        --register-unsafely-without-email --redirect 2>&1 | tail -10 || true
+
+    # Проверяем что у сервера уже есть сертификат
+    if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+        echo -e "${CYAN}Найден существующий сертификат для $DOMAIN — используем его${NC}"
+        CERT_OK="y"
+    else
+        # Получаем сертификат через --webroot (не модифицирует nginx-конфиги)
+        # Это безопасно для серверов где уже есть другие nginx-сайты
+        mkdir -p /var/www/html
+        if certbot certonly --webroot --webroot-path /var/www/html \
+            -d "$DOMAIN" --non-interactive --agree-tos \
+            --register-unsafely-without-email 2>&1 | tail -10; then
+            sleep 2
+            if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+                CERT_OK="y"
+                echo -e "${GREEN}✓ Сертификат получен${NC}"
+            fi
+        fi
+    fi
 
     # Проверяем что сертификат реально создался (может уже был от прошлой установки)
     sleep 2
@@ -477,7 +481,9 @@ if [ "$ENABLE_HTTPS" = "y" ] && [ -n "$DOMAIN" ]; then
     fi
 
 if [ "$CERT_OK" = "y" ]; then
-    # Переписываем конфиг — ТОЛЬКО на нашем порту, БЕЗ редиректа с 80
+    # Переписываем конфиг — ТОЛЬКО на нашем порту, БЕЗ блока на порту 80
+    # (acme-challenge для продления сертификата работает через другие конфиги
+    # продление будет работать через --webroot certbot)
     CERTBOT_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
     CERTBOT_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 
@@ -513,23 +519,7 @@ server {
         proxy_send_timeout 600s;
         proxy_buffering off;
         proxy_cache off;
-        chunked_transfer_encoding on;        
-    }
-}
-
-# Минимальный конфиг для обновления Let's Encrypt сертификата
-# (порт 80 нужен только для acme-challenge, без редиректа на наш порт)
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
-    # На любой другой запрос - 404 (мы не хотим перехватывать порт 80)
-    location / {
-        return 404;
+        chunked_transfer_encoding on;
     }
 }
 EOF
